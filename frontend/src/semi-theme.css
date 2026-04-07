@@ -1,0 +1,235 @@
+/**
+ * Semi Design 主色映射：将内置「blue」刻度替换为浅紫 / 紫罗兰，
+ * 使 Button、Link、Slider、Progress 等随主题变紫。
+ */
+.app-semi-shell {
+  --semi-blue-0: 250, 245, 255;
+  --semi-blue-1: 243, 232, 255;
+  --semi-blue-2: 233, 213, 255;
+  --semi-blue-3: 216, 180, 254;
+  --semi-blue-4: 192, 132, 252;
+  --semi-blue-5: 167, 139, 250;
+  --semi-blue-6: 147, 112, 219;
+  --semi-blue-7: 124, 58, 237;
+  --semi-blue-8: 109, 40, 217;
+  --semi-blue-9: 91, 33, 182;
+
+  min-height: 100vh;
+  background: linear-gradient(
+    155deg,
+    #faf8ff 0%,
+    #f5f0ff 18%,
+    #ede9fe 42%,
+    #e9e0ff 65%,
+    #f3e8ff 88%,
+    #faf5ff 100%
+  );
+  background-attachment: fixed;
+}
+
+.app-semi-header.semi-layout-header {
+  background: rgba(255, 255, 255, 0.78) !important;
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border-bottom: 1px solid rgba(139, 92, 246, 0.14) !important;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.6) inset;
+}
+
+.app-semi-main.semi-layout-content {
+  background: transparent !important;
+}
+
+/* 内容区卡片：轻微毛玻璃，贴近 Semi 文档站层次感 */
+.app-semi-shell .semi-card {
+  background: rgba(255, 255, 255, 0.88);
+  border-color: rgba(139, 92, 246, 0.12);
+}
+
+.app-semi-shell .semi-card-bordered {
+  border-color: rgba(139, 92, 246, 0.14);
+}
+
+.app-semi-shell .semi-table-thead > .semi-table-row > .semi-table-row-head {
+  background: rgba(245, 243, 255, 0.95);
+}
+
+/* -------------------------------------------------------------------------- */
+/* 全站按钮：仅两种主视觉 — 紫底白字（solid primary） / 白底紫字（light 与线框） */
+/* 危险操作（type=danger）保持红色系，便于识别删除等行为。 */
+/* -------------------------------------------------------------------------- */
+
+/* 主按钮 solid + primary：紫底白字 */
+.app-semi-shell
+  .semi-button-primary:not(.semi-button-light):not(.semi-button-outline):not(
+    .semi-button-borderless
+  ) {
+  background-color: rgba(var(--semi-blue-6), 1) !important;
+  color: #fff !important;
+  border: none !important;
+}
+.app-semi-shell
+  .semi-button-primary:not(.semi-button-light):not(.semi-button-outline):not(
+    .semi-button-borderless
+  ):hover {
+  background-color: rgba(var(--semi-blue-7), 1) !important;
+  color: #fff !important;
+}
+.app-semi-shell
+  .semi-button-primary:not(.semi-button-light):not(.semi-button-outline):not(
+    .semi-button-borderless
+  ):active {
+  background-color: rgba(var(--semi-blue-8), 1) !important;
+  color: #fff !important;
+}
+.app-semi-shell
+  .semi-button-primary.semi-button-disabled:not(.semi-button-light):not(
+    .semi-button-outline
+  ):not(.semi-button-borderless) {
+  background-color: rgba(var(--semi-grey-3), 1) !important;
+  color: rgba(var(--semi-white), 0.75) !important;
+}
+
+/* 默认大量按钮 primary + light：白底紫字 */
+.app-semi-shell .semi-button-primary.semi-button-light {
+  background-color: #ffffff !important;
+  color: rgba(var(--semi-blue-7), 1) !important;
+  border: 1px solid rgba(var(--semi-blue-3), 0.55) !important;
+}
+.app-semi-shell .semi-button-primary.semi-button-light:hover {
+  background-color: #faf5ff !important;
+  color: rgba(var(--semi-blue-8), 1) !important;
+  border-color: rgba(var(--semi-blue-4), 0.85) !important;
+}
+.app-semi-shell .semi-button-primary.semi-button-light:active {
+  background-color: #f3e8ff !important;
+  border-color: rgba(var(--semi-blue-5), 1) !important;
+}
+.app-semi-shell .semi-button-primary.semi-button-light.semi-button-disabled {
+  background-color: rgba(var(--semi-grey-0), 1) !important;
+  color: rgba(var(--semi-grey-5), 1) !important;
+  border-color: rgba(var(--semi-grey-2), 1) !important;
+}
+
+.app-semi-shell .semi-button-primary.semi-button-borderless {
+  color: rgba(var(--semi-blue-6), 1) !important;
+  background-color: transparent !important;
+}
+.app-semi-shell .semi-button-primary.semi-button-borderless:hover {
+  background-color: rgba(var(--semi-blue-0), 0.95) !important;
+  color: rgba(var(--semi-blue-8), 1) !important;
+}
+
+.app-semi-shell .semi-button-primary.semi-button-outline {
+  background-color: #ffffff !important;
+  border: 1px solid rgba(var(--semi-blue-5), 1) !important;
+  color: rgba(var(--semi-blue-7), 1) !important;
+}
+.app-semi-shell .semi-button-primary.semi-button-outline:hover {
+  background-color: #faf5ff !important;
+  border-color: rgba(var(--semi-blue-6), 1) !important;
+}
+
+/* tertiary：统一为白底紫字（含默认 theme=light） */
+.app-semi-shell .semi-button-tertiary.semi-button-light {
+  background-color: #ffffff !important;
+  color: rgba(var(--semi-blue-7), 1) !important;
+  border: 1px solid rgba(var(--semi-blue-3), 0.45) !important;
+}
+.app-semi-shell .semi-button-tertiary.semi-button-light:hover {
+  background-color: #faf5ff !important;
+  border-color: rgba(var(--semi-blue-4), 0.75) !important;
+  color: rgba(var(--semi-blue-8), 1) !important;
+}
+.app-semi-shell .semi-button-tertiary.semi-button-light:active {
+  background-color: #f3e8ff !important;
+}
+
+.app-semi-shell
+  .semi-button-tertiary:not(.semi-button-light):not(.semi-button-outline):not(
+    .semi-button-borderless
+  ) {
+  background-color: rgba(var(--semi-blue-6), 1) !important;
+  color: #fff !important;
+  border: none !important;
+}
+.app-semi-shell
+  .semi-button-tertiary:not(.semi-button-light):not(.semi-button-outline):not(
+    .semi-button-borderless
+  ):hover {
+  background-color: rgba(var(--semi-blue-7), 1) !important;
+  color: #fff !important;
+}
+.app-semi-shell
+  .semi-button-tertiary:not(.semi-button-light):not(.semi-button-outline):not(
+    .semi-button-borderless
+  ):active {
+  background-color: rgba(var(--semi-blue-8), 1) !important;
+}
+
+.app-semi-shell .semi-button-tertiary.semi-button-borderless {
+  color: rgba(var(--semi-blue-6), 1) !important;
+  background-color: transparent !important;
+  border: none !important;
+}
+.app-semi-shell .semi-button-tertiary.semi-button-borderless:hover {
+  background-color: rgba(var(--semi-blue-0), 0.95) !important;
+  color: rgba(var(--semi-blue-8), 1) !important;
+}
+
+.app-semi-shell .semi-button-tertiary.semi-button-outline {
+  background-color: #ffffff !important;
+  border: 1px solid rgba(var(--semi-blue-4), 0.75) !important;
+  color: rgba(var(--semi-blue-7), 1) !important;
+}
+
+/* secondary：白底紫字（线框实心均统一） */
+.app-semi-shell .semi-button-secondary.semi-button-light,
+.app-semi-shell .semi-button-secondary.semi-button-outline,
+.app-semi-shell .semi-button-secondary.semi-button-borderless {
+  background-color: #ffffff !important;
+  color: rgba(var(--semi-blue-7), 1) !important;
+  border: 1px solid rgba(var(--semi-blue-3), 0.45) !important;
+}
+.app-semi-shell .semi-button-secondary.semi-button-borderless {
+  border: none !important;
+  background-color: transparent !important;
+}
+.app-semi-shell .semi-button-secondary.semi-button-borderless:hover {
+  background-color: rgba(var(--semi-blue-0), 0.95) !important;
+}
+.app-semi-shell
+  .semi-button-secondary:not(.semi-button-light):not(.semi-button-outline):not(
+    .semi-button-borderless
+  ) {
+  background-color: rgba(var(--semi-blue-6), 1) !important;
+  color: #fff !important;
+  border: none !important;
+}
+.app-semi-shell
+  .semi-button-secondary:not(.semi-button-light):not(.semi-button-outline):not(
+    .semi-button-borderless
+  ):hover {
+  background-color: rgba(var(--semi-blue-7), 1) !important;
+  color: #fff !important;
+}
+
+/* 分页：当前页紫底白字，其余悬停浅紫底紫字 */
+.app-semi-shell .semi-page-item-active {
+  background-color: rgba(var(--semi-blue-6), 1) !important;
+  color: #fff !important;
+  font-weight: 600;
+}
+.app-semi-shell .semi-page-item-active:hover {
+  background-color: rgba(var(--semi-blue-7), 1) !important;
+  color: #fff !important;
+}
+.app-semi-shell
+  .semi-page-item:not(.semi-page-item-disabled):not(.semi-page-item-active):hover {
+  background-color: rgba(var(--semi-blue-0), 1) !important;
+  color: rgba(var(--semi-blue-7), 1) !important;
+}
+.app-semi-shell .semi-page-prev:not(.semi-page-item-disabled):hover,
+.app-semi-shell .semi-page-next:not(.semi-page-item-disabled):hover {
+  background-color: rgba(var(--semi-blue-0), 1) !important;
+  color: rgba(var(--semi-blue-7), 1) !important;
+}
