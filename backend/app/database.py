@@ -43,6 +43,11 @@ def migrate_sqlite_schema() -> None:
 
     if "review_tasks" in tables:
         cols = {c["name"] for c in insp.get_columns("review_tasks")}
+        if "user_id" not in cols:
+            with engine.begin() as conn:
+                conn.execute(
+                    text("ALTER TABLE review_tasks ADD COLUMN user_id INTEGER")
+                )
         if "llm_agent_id" not in cols:
             with engine.begin() as conn:
                 conn.execute(
@@ -53,9 +58,62 @@ def migrate_sqlite_schema() -> None:
                 conn.execute(
                     text("ALTER TABLE review_tasks ADD COLUMN review_summary TEXT")
                 )
+        if "analysis_status" not in cols:
+            with engine.begin() as conn:
+                conn.execute(
+                    text("ALTER TABLE review_tasks ADD COLUMN analysis_status VARCHAR(32) DEFAULT 'draft'")
+                )
+        if "doc_total_chars" not in cols:
+            with engine.begin() as conn:
+                conn.execute(
+                    text("ALTER TABLE review_tasks ADD COLUMN doc_total_chars INTEGER")
+                )
+        if "doc_total_chunks" not in cols:
+            with engine.begin() as conn:
+                conn.execute(
+                    text("ALTER TABLE review_tasks ADD COLUMN doc_total_chunks INTEGER")
+                )
+        if "overall_assessment" not in cols:
+            with engine.begin() as conn:
+                conn.execute(
+                    text("ALTER TABLE review_tasks ADD COLUMN overall_assessment TEXT")
+                )
+        if "missing_materials" not in cols:
+            with engine.begin() as conn:
+                conn.execute(
+                    text("ALTER TABLE review_tasks ADD COLUMN missing_materials TEXT")
+                )
+        if "last_review_run_id" not in cols:
+            with engine.begin() as conn:
+                conn.execute(
+                    text("ALTER TABLE review_tasks ADD COLUMN last_review_run_id INTEGER")
+                )
 
     if "llm_agents" in tables:
         acols = {c["name"] for c in insp.get_columns("llm_agents")}
+        if "user_id" not in acols:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE llm_agents ADD COLUMN user_id INTEGER"))
         if "system_prompt" not in acols:
             with engine.begin() as conn:
                 conn.execute(text("ALTER TABLE llm_agents ADD COLUMN system_prompt TEXT"))
+
+    if "review_tasks" in tables:
+        rcols = {c["name"] for c in insp.get_columns("review_tasks")}
+        if "project_id" not in rcols:
+            with engine.begin() as conn:
+                conn.execute(
+                    text("ALTER TABLE review_tasks ADD COLUMN project_id INTEGER")
+                )
+        if "phase" not in rcols:
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "ALTER TABLE review_tasks ADD COLUMN phase VARCHAR(32) NOT NULL DEFAULT 'implementation'"
+                    )
+                )
+        if "framework_version_id" not in rcols:
+            with engine.begin() as conn:
+                conn.execute(
+                    text("ALTER TABLE review_tasks ADD COLUMN framework_version_id INTEGER")
+                )

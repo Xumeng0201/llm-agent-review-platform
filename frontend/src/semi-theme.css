@@ -1,38 +1,33 @@
 /**
- * Semi Design 主色映射：将内置「blue」刻度替换为浅紫 / 紫罗兰，
- * 使 Button、Link、Slider、Progress 等随主题变紫。
+ * Semi Design 主色映射：将内置「blue」刻度替换为青蓝科技色，
+ * 使 Button、Link、Slider、Progress 等随主题统一到当前视觉语言。
  */
 .app-semi-shell {
-  --semi-blue-0: 250, 245, 255;
-  --semi-blue-1: 243, 232, 255;
-  --semi-blue-2: 233, 213, 255;
-  --semi-blue-3: 216, 180, 254;
-  --semi-blue-4: 192, 132, 252;
-  --semi-blue-5: 167, 139, 250;
-  --semi-blue-6: 147, 112, 219;
-  --semi-blue-7: 124, 58, 237;
-  --semi-blue-8: 109, 40, 217;
-  --semi-blue-9: 91, 33, 182;
+  --semi-blue-0: 245, 247, 255;
+  --semi-blue-1: 230, 235, 255;
+  --semi-blue-2: 208, 217, 255;
+  --semi-blue-3: 170, 185, 255;
+  --semi-blue-4: 129, 140, 248;
+  --semi-blue-5: 99, 102, 241;
+  --semi-blue-6: 79, 70, 229;
+  --semi-blue-7: 67, 56, 202;
+  --semi-blue-8: 55, 48, 163;
+  --semi-blue-9: 49, 46, 129;
 
   min-height: 100vh;
-  background: linear-gradient(
-    155deg,
-    #faf8ff 0%,
-    #f5f0ff 18%,
-    #ede9fe 42%,
-    #e9e0ff 65%,
-    #f3e8ff 88%,
-    #faf5ff 100%
-  );
+  background:
+    radial-gradient(circle at 14% 18%, rgba(135, 183, 255, 0.54), transparent 28%),
+    radial-gradient(circle at 78% 10%, rgba(133, 121, 255, 0.48), transparent 26%),
+    radial-gradient(circle at 50% 38%, rgba(255, 255, 255, 0.96), rgba(245, 247, 255, 0.92) 48%, rgba(234, 240, 255, 0.88) 100%);
   background-attachment: fixed;
 }
 
 .app-semi-header.semi-layout-header {
-  background: rgba(255, 255, 255, 0.78) !important;
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
-  border-bottom: 1px solid rgba(139, 92, 246, 0.14) !important;
-  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.6) inset;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(255, 255, 255, 0.54)) !important;
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-bottom: 1px solid rgba(15, 23, 42, 0.06) !important;
+  box-shadow: 0 10px 30px rgba(112, 121, 164, 0.08);
 }
 
 .app-semi-main.semi-layout-content {
@@ -41,16 +36,98 @@
 
 /* 内容区卡片：轻微毛玻璃，贴近 Semi 文档站层次感 */
 .app-semi-shell .semi-card {
-  background: rgba(255, 255, 255, 0.88);
-  border-color: rgba(139, 92, 246, 0.12);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.82), rgba(247, 248, 255, 0.68)) !important;
+  border-color: rgba(255, 255, 255, 0.88);
+  color: #111111;
+  box-shadow: 0 20px 50px rgba(111, 123, 168, 0.1);
 }
 
 .app-semi-shell .semi-card-bordered {
-  border-color: rgba(139, 92, 246, 0.14);
+  border-color: rgba(255, 255, 255, 0.88);
+}
+
+.app-semi-shell .semi-card-header,
+.app-semi-shell .semi-card-body,
+.app-semi-shell .semi-card-wrapper {
+  background: transparent !important;
+  color: #111111 !important;
+}
+
+.app-semi-shell .semi-card-header {
+  border-bottom-color: rgba(15, 23, 42, 0.06) !important;
 }
 
 .app-semi-shell .semi-table-thead > .semi-table-row > .semi-table-row-head {
-  background: rgba(245, 243, 255, 0.95);
+  background: rgba(255, 255, 255, 0.3);
+}
+
+.app-semi-shell .semi-table,
+.app-semi-shell .semi-table-container,
+.app-semi-shell .semi-table-body,
+.app-semi-shell .semi-table-wrapper,
+.app-semi-shell .semi-table-row,
+.app-semi-shell .semi-table-tbody > .semi-table-row > .semi-table-row-cell,
+.app-semi-shell .semi-table-thead > .semi-table-row > .semi-table-row-head,
+.app-semi-shell .semi-table table {
+  background: transparent !important;
+}
+
+.app-semi-shell .semi-table-tbody > .semi-table-row > .semi-table-row-cell {
+  color: rgba(15, 23, 42, 0.82) !important;
+}
+
+.app-semi-shell .semi-table-thead > .semi-table-row > .semi-table-row-head {
+  color: rgba(17, 24, 39, 0.68) !important;
+}
+
+.app-semi-main .semi-typography,
+.app-semi-main .semi-typography-text,
+.app-semi-main .semi-typography-paragraph {
+  color: rgba(17, 24, 39, 0.92);
+}
+
+.app-semi-main .semi-typography-secondary,
+.app-semi-main .semi-typography-tertiary {
+  color: rgba(55, 65, 81, 0.68) !important;
+}
+
+.app-semi-main .semi-input-wrapper,
+.app-semi-main .semi-input-textarea-wrapper,
+.app-semi-main .semi-select {
+  background: rgba(255, 255, 255, 0.72) !important;
+  border-color: rgba(255, 255, 255, 0.88) !important;
+  color: #111111 !important;
+}
+
+.app-semi-main .semi-input,
+.app-semi-main .semi-input-textarea {
+  color: #111111 !important;
+}
+
+.app-semi-main .semi-input::placeholder,
+.app-semi-main .semi-input-textarea::placeholder {
+  color: rgba(55, 65, 81, 0.42) !important;
+}
+
+.semi-select-option-list,
+.semi-select-dropdown,
+.semi-dropdown-menu,
+.semi-popover-content,
+.semi-tooltip-wrapper {
+  background: rgba(255, 255, 255, 0.96) !important;
+  color: #111111 !important;
+  border-color: rgba(255, 255, 255, 0.92) !important;
+  box-shadow: 0 20px 50px rgba(111, 123, 168, 0.14);
+}
+
+.semi-select-option,
+.semi-dropdown-item {
+  color: rgba(17, 24, 39, 0.84) !important;
+}
+
+.semi-select-option:hover,
+.semi-dropdown-item:hover {
+  background: rgba(99, 102, 241, 0.08) !important;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -63,7 +140,7 @@
   .semi-button-primary:not(.semi-button-light):not(.semi-button-outline):not(
     .semi-button-borderless
   ) {
-  background-color: rgba(var(--semi-blue-6), 1) !important;
+  background-color: #111111 !important;
   color: #fff !important;
   border: none !important;
 }
@@ -71,14 +148,14 @@
   .semi-button-primary:not(.semi-button-light):not(.semi-button-outline):not(
     .semi-button-borderless
   ):hover {
-  background-color: rgba(var(--semi-blue-7), 1) !important;
+  background-color: #000 !important;
   color: #fff !important;
 }
 .app-semi-shell
   .semi-button-primary:not(.semi-button-light):not(.semi-button-outline):not(
     .semi-button-borderless
   ):active {
-  background-color: rgba(var(--semi-blue-8), 1) !important;
+  background-color: #1f1f1f !important;
   color: #fff !important;
 }
 .app-semi-shell
@@ -91,18 +168,18 @@
 
 /* 默认大量按钮 primary + light：白底紫字 */
 .app-semi-shell .semi-button-primary.semi-button-light {
-  background-color: #ffffff !important;
-  color: rgba(var(--semi-blue-7), 1) !important;
-  border: 1px solid rgba(var(--semi-blue-3), 0.55) !important;
+  background-color: rgba(255, 255, 255, 0.78) !important;
+  color: #111111 !important;
+  border: 1px solid rgba(255, 255, 255, 0.9) !important;
 }
 .app-semi-shell .semi-button-primary.semi-button-light:hover {
-  background-color: #faf5ff !important;
-  color: rgba(var(--semi-blue-8), 1) !important;
-  border-color: rgba(var(--semi-blue-4), 0.85) !important;
+  background-color: rgba(255, 255, 255, 0.92) !important;
+  color: #111111 !important;
+  border-color: rgba(255, 255, 255, 1) !important;
 }
 .app-semi-shell .semi-button-primary.semi-button-light:active {
-  background-color: #f3e8ff !important;
-  border-color: rgba(var(--semi-blue-5), 1) !important;
+  background-color: rgba(244, 244, 248, 0.96) !important;
+  border-color: rgba(229, 231, 235, 1) !important;
 }
 .app-semi-shell .semi-button-primary.semi-button-light.semi-button-disabled {
   background-color: rgba(var(--semi-grey-0), 1) !important;
@@ -131,17 +208,17 @@
 
 /* tertiary：统一为白底紫字（含默认 theme=light） */
 .app-semi-shell .semi-button-tertiary.semi-button-light {
-  background-color: #ffffff !important;
-  color: rgba(var(--semi-blue-7), 1) !important;
-  border: 1px solid rgba(var(--semi-blue-3), 0.45) !important;
+  background-color: rgba(255, 255, 255, 0.68) !important;
+  color: #111111 !important;
+  border: 1px solid rgba(255, 255, 255, 0.86) !important;
 }
 .app-semi-shell .semi-button-tertiary.semi-button-light:hover {
-  background-color: #faf5ff !important;
-  border-color: rgba(var(--semi-blue-4), 0.75) !important;
-  color: rgba(var(--semi-blue-8), 1) !important;
+  background-color: rgba(255, 255, 255, 0.9) !important;
+  border-color: rgba(255, 255, 255, 0.96) !important;
+  color: #111111 !important;
 }
 .app-semi-shell .semi-button-tertiary.semi-button-light:active {
-  background-color: #f3e8ff !important;
+  background-color: rgba(244, 244, 248, 0.96) !important;
 }
 
 .app-semi-shell

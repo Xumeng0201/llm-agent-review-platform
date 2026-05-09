@@ -1,0 +1,103 @@
+{
+  "template_name": "项目建设实施方案（综合类编制模板）",
+  "version": "2025-07-11",
+  "dimension": {
+    "id": 9000,
+    "key": "template_compliance",
+    "title": "模板符合性"
+  },
+  "chapters": [
+    {
+      "code": "1",
+      "title": "项目概述",
+      "required": true,
+      "aliases": ["项目概况", "建设概述", "项目基本情况"],
+      "children": [
+        { "code": "1.1", "title": "项目名称", "required": true, "aliases": [] },
+        { "code": "1.2", "title": "项目建设单位", "required": true, "aliases": ["建设单位"] },
+        { "code": "1.3", "title": "项目实施部门职责", "required": true, "aliases": ["实施部门职责", "项目实施部门"] },
+        { "code": "1.4", "title": "建设方案编制单位", "required": true, "aliases": ["编制单位", "设计单位"] },
+        { "code": "1.5", "title": "建设方案编制依据", "required": true, "aliases": ["编制依据", "建设依据"] },
+        { "code": "1.6", "title": "总投资及资金来源", "required": true, "aliases": ["投资及资金来源", "资金来源"] }
+      ]
+    },
+    {
+      "code": "2",
+      "title": "项目必要性和可行性",
+      "required": true,
+      "aliases": ["必要性和可行性", "必要性可行性分析"],
+      "children": [
+        { "code": "2.1", "title": "背景和依据", "required": true, "aliases": ["项目背景和依据", "背景依据"] },
+        { "code": "2.2", "title": "现状分析", "required": true, "aliases": ["系统现状分析", "现状"] },
+        { "code": "2.3", "title": "存在的问题", "required": true, "aliases": ["存在问题", "问题分析"] },
+        { "code": "2.4", "title": "必要性、意义", "required": true, "aliases": ["必要性", "建设意义"] },
+        { "code": "2.5", "title": "项目可行性分析", "required": true, "aliases": ["可行性分析"] }
+      ]
+    },
+    {
+      "code": "3",
+      "title": "项目需求分析",
+      "required": true,
+      "aliases": ["需求分析"],
+      "children": [
+        { "code": "3.1", "title": "与职能相关的社会问题和目标分析", "required": true, "aliases": ["社会问题和目标分析", "服务对象分析", "系统用户分析"] },
+        { "code": "3.2", "title": "业务需求分析", "required": true, "aliases": [] },
+        { "code": "3.3", "title": "功能需求分析", "required": true, "aliases": [] },
+        { "code": "3.4", "title": "性能需求分析", "required": true, "aliases": [] },
+        { "code": "3.5", "title": "安全需求分析", "required": true, "aliases": [] },
+        { "code": "3.6", "title": "信息量分析与预测", "required": false, "aliases": ["信息量预测"] }
+      ]
+    },
+    {
+      "code": "4",
+      "title": "项目设计方案",
+      "required": true,
+      "aliases": ["设计方案", "建设设计方案"],
+      "children": [
+        { "code": "4.1", "title": "总体设计原则", "required": true, "aliases": ["设计原则"] },
+        { "code": "4.2", "title": "建设目标", "required": true, "aliases": ["总体建设目标", "本期建设目标", "实现功能", "达到效果", "绩效目标"] },
+        { "code": "4.3", "title": "建设内容", "required": true, "aliases": ["总体建设内容", "本期建设内容"] },
+        { "code": "4.4", "title": "系统总体架构和入云说明", "required": true, "aliases": ["总体架构", "入云", "架构图"] },
+        { "code": "4.5", "title": "数据目录规划和上链说明", "required": true, "aliases": ["数据目录规划", "上链"] },
+        { "code": "4.6", "title": "数据共享汇数说明", "required": true, "aliases": ["数据共享", "汇数", "数据库设计", "存储系统设计", "数据处理设计"] },
+        { "code": "4.7", "title": "支撑平台及应用系统设计", "required": true, "aliases": ["支撑平台设计", "应用系统设计"] },
+        { "code": "4.8", "title": "终端系统及接口设计", "required": true, "aliases": ["终端系统设计", "接口设计"] },
+        { "code": "4.9", "title": "网络及安全系统设计", "required": true, "aliases": ["网络系统设计", "安全系统设计"] },
+        { "code": "4.10", "title": "系统软硬件设备配置", "required": true, "aliases": ["软硬件设备配置", "设备配置清单", "设备部署"] },
+        { "code": "4.11", "title": "机房及相关配套设计", "required": false, "aliases": ["机房设计", "相关配套设计"] },
+        { "code": "4.12", "title": "备份系统设计", "required": false, "aliases": ["备份设计"] }
+      ]
+    },
+    {
+      "code": "5",
+      "title": "项目实施计划",
+      "required": true,
+      "aliases": ["实施计划", "项目计划"],
+      "children": [
+        { "code": "5.1", "title": "项目管理计划", "required": true, "aliases": ["进度管理计划", "质量管理计划", "资金管理计划", "人员配置管理计划"] },
+        { "code": "5.2", "title": "项目合同签订", "required": false, "aliases": ["合同签订"] },
+        { "code": "5.3", "title": "项目需求调研确认及深化设计", "required": true, "aliases": ["需求调研确认", "深化设计"] },
+        { "code": "5.4", "title": "系统开发", "required": true, "aliases": ["开发计划"] },
+        { "code": "5.5", "title": "交付物、初验、试运行和项目竣工验收", "required": true, "aliases": ["交付物", "初验", "试运行", "竣工验收"] }
+      ]
+    },
+    {
+      "code": "6",
+      "title": "效益、风险及对策",
+      "required": true,
+      "aliases": ["效益风险及对策", "效益与风险", "风险及对策"],
+      "children": []
+    },
+    {
+      "code": "7",
+      "title": "项目投资概算",
+      "required": true,
+      "aliases": ["投资概算", "项目概算", "总投资概算表"],
+      "children": [
+        { "code": "7.1", "title": "项目总投资概算表", "required": true, "aliases": ["总投资概算表"] },
+        { "code": "7.2", "title": "政府集中采购和非政府集中采购说明", "required": false, "aliases": ["政府集中采购", "非政府集中采购"] },
+        { "code": "7.3", "title": "不采购信创产品的原因", "required": false, "aliases": ["信创产品原因", "不采购信创产品"] }
+      ]
+    }
+  ]
+}

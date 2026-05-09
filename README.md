@@ -32,21 +32,113 @@
 
 ## 本地运行
 
-### 1. 后端
+### 手动启动操作指南（自己跑起来）
+
+下面假设项目在本机的路径为 **`llm-agent-review-platform` 根目录**（即同时包含 `backend/` 与 `frontend/` 的那一层）。
+
+#### 0. 环境要求
+
+| 组件 | 说明 |
+|------|------|
+| **Python** | 3.9 或以上（与 `backend` 一致即可） |
+| **Node.js** | 建议 18 LTS 或以上（用于运行 Vite / npm） |
+| **终端** | macOS / Linux 用「终端」；Windows 用 PowerShell 或 CMD |
+
+端口约定：**后端 8099**，**前端 5173**（见 `frontend/vite.config.ts` 里对 `/api` 的代理目标）。
+
+#### 1. 第一次使用项目时（每台电脑只需做一次）
+
+在项目**根目录**打开终端，依次执行。
+
+**（1）后端：虚拟环境 + 依赖**
+
+```bash
+cd backend
+python3 -m venv .venv
+```
+
+激活虚拟环境：
+
+- **macOS / Linux**：`source .venv/bin/activate`
+- **Windows（CMD）**：`.venv\Scripts\activate.bat`
+- **Windows（PowerShell）**：`.venv\Scripts\Activate.ps1`
+
+然后安装依赖（若安装 `lxml` / `python-docx` 报错，先升级 pip 再装）：
+
+```bash
+python -m pip install -U pip
+pip install -r requirements.txt
+```
+
+**（2）前端：安装 npm 包**
+
+```bash
+cd ../frontend
+npm install
+```
+
+#### 2. 以后每次手动启动（需要两个终端窗口）
+
+**必须先起后端，再开前端**（或两个都开着即可；前端通过代理访问后端）。
+
+**终端 A —— 启动后端 API**
+
+```bash
+cd /你的路径/llm-agent-review-platform/backend
+source .venv/bin/activate          # Windows 改用上一节的 activate 命令
+uvicorn app.main:app --reload --host 127.0.0.1 --port 8099
+```
+
+看到类似 `Uvicorn running on http://127.0.0.1:8099` 即表示后端已监听。
+
+**终端 B —— 启动前端开发服务器**
+
+```bash
+cd /你的路径/llm-agent-review-platform/frontend
+npm run dev
+```
+
+看到 `Local: http://localhost:5173/` 后，用浏览器打开：
+
+- **应用首页**：[http://127.0.0.1:5173](http://127.0.0.1:5173)
+
+前端会把以 `/api` 开头的请求**代理到** `http://127.0.0.1:8099`，因此一般**不需要**单独在浏览器里打开 8099 来使用界面。
+
+#### 3. 确认是否启动成功
+
+- 后端健康检查：[http://127.0.0.1:8099/api/health](http://127.0.0.1:8099/api/health)
+- 后端接口文档：[http://127.0.0.1:8099/docs](http://127.0.0.1:8099/docs)
+- 前端能打开且「评审任务」等页面不报网络错误，即代理与后端正常。
+
+#### 4. 如何停止
+
+在运行 `uvicorn` 或 `npm run dev` 的终端里按 **`Ctrl + C`** 结束对应进程。两个终端各按一次，前后端就都停了。
+
+#### 5. 常见问题
+
+- **端口被占用**：若 8099 或 5173 已被占用，可关掉占用程序，或自行改端口（改后端启动参数，并同步修改 `frontend/vite.config.ts` 里 `proxy["/api"].target`）。
+- **`ModuleNotFoundError: No module named 'docx'`**：在已激活的 `backend` 虚拟环境里执行 `pip install -r requirements.txt`；仍失败时先 `python -m pip install -U pip`。
+- **前端能开但接口全失败**：确认终端 A 里后端仍在运行，且地址为 **127.0.0.1:8099**。
+
+---
+
+### 命令速查（与上文一致）
+
+**后端**
 
 ```bash
 cd backend
 python3 -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+uvicorn app.main:app --reload --host 127.0.0.1 --port 8099
 ```
 
-- 健康检查：[http://127.0.0.1:8000/api/health](http://127.0.0.1:8000/api/health)
-- OpenAPI：[http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
+- 健康检查：[http://127.0.0.1:8099/api/health](http://127.0.0.1:8099/api/health)
+- OpenAPI：[http://127.0.0.1:8099/docs](http://127.0.0.1:8099/docs)
 - 主要 API 前缀：`/api/review-tasks`、`/api/llm-agents`、`/api/framework`
 
-### 2. 前端
+**前端**
 
 ```bash
 cd frontend
@@ -54,9 +146,9 @@ npm install
 npm run dev
 ```
 
-浏览器：[http://127.0.0.1:5173](http://127.0.0.1:5173)（`/api` 由 Vite 代理到 8000）
+浏览器：[http://127.0.0.1:5173](http://127.0.0.1:5173)（`/api` 由 Vite 代理到 8099）
 
-前端路由：`/` 首页，`/tasks` 评审任务列表，`/methods` 测评智能体配置，`/tasks/new` 新建，`/tasks/:id` 详情与打分。
+**前端路由（摘要）**：`/` 首页；`/tasks` 评审任务列表；`/methods` 测评智能体；`/tasks/new` 新建任务；`/tasks/:id` 会重定向到第一步；`/tasks/:id/plan|scores|report` 为三步流程页面。
 
 ### 生产构建
 
@@ -96,4 +188,3 @@ cd frontend && npm run build
 - 登录与角色（申报方 / 审核员 / 管理员）
 - 二级指标细分打分与权重
 - 服务端 PDF 生成（当前推荐用 HTML 报告 + 浏览器打印为 PDF）
-

@@ -22,6 +22,20 @@ const providerLabel: Record<LlmProvider, string> = {
   custom: "自定义（OpenAI 兼容）",
 };
 
+const RECOMMENDED_ISSUE_REVIEW_PROMPT = `你是一名政府和大型企事业单位项目方案审查专家，负责审查大模型、智能体类项目方案。
+
+你的工作目标不是给方案打分，而是输出“问题清单”和“整改建议”。请始终坚持以下口径：
+1. 只指出问题，不主动输出总分、分数、通过率或评分制结论。
+2. 必须依据证据判断；材料未体现时，只能写“未见材料说明”，不能主观脑补。
+3. 问题必须分为：严重问题、一般问题、轻微问题。
+4. 严重问题仅用于合规、安全、数据治理、可实施性、验收机制等会显著影响项目推进的重大缺口。
+5. 一般问题用于关键论证不足、机制不完整、支撑材料不充分。
+6. 轻微问题用于表述、结构、术语、细节完整性方面的问题。
+7. 整改建议必须具体、克制、可执行，优先写“应补充什么材料、补足什么机制、澄清什么边界”。
+8. 语气保持专业、审慎、书面化，不夸张，不泛泛而谈。
+
+如果系统已经给出审查维度、重点关注项、严重/一般/轻微问题参考规则，你必须优先服从这些系统约束。你的任务是沿着这些维度发现问题，而不是另起一套评价体系。`;
+
 export default function MethodsPage() {
   const [agents, setAgents] = useState<LlmAgent[]>([]);
   const [err, setErr] = useState<string | null>(null);
@@ -76,7 +90,7 @@ export default function MethodsPage() {
       setName("");
       setApiKey("");
       setSystemPrompt("");
-      setMsg("已添加测评智能体。");
+      setMsg("已添加审查智能体。");
       await load();
     } catch (e) {
       setErr(e instanceof Error ? e.message : "创建失败");
@@ -119,21 +133,44 @@ export default function MethodsPage() {
     }
   }
 
+  function applyRecommendedPromptForCreate() {
+    setSystemPrompt(RECOMMENDED_ISSUE_REVIEW_PROMPT);
+    setMsg("已填入推荐的问题审查提示词模板。");
+  }
+
+  function applyRecommendedPromptForEdit() {
+    setEditPrompt(RECOMMENDED_ISSUE_REVIEW_PROMPT);
+    setMsg("已填入推荐的问题审查提示词模板。");
+  }
+
   const columns = [
-    { title: "名称", dataIndex: "name", key: "name" },
+    {
+      title: "名称",
+      dataIndex: "name",
+      key: "name",
+      render: (text: string) => (
+        <Text strong style={{ color: "#0f172a" }}>
+          {text}
+        </Text>
+      ),
+    },
     {
       title: "提供方",
       dataIndex: "provider",
       key: "provider",
       width: 160,
-      render: (p: LlmProvider) => providerLabel[p],
+      render: (p: LlmProvider) => (
+        <Text style={{ color: "rgba(51, 65, 85, 0.9)" }}>{providerLabel[p]}</Text>
+      ),
     },
     {
       title: "模型",
       dataIndex: "model",
       key: "model",
       render: (m: string) => (
-        <span style={{ fontFamily: "monospace", fontSize: 12 }}>{m}</span>
+        <span style={{ fontFamily: "monospace", fontSize: 12, color: "rgba(51, 65, 85, 0.84)" }}>
+          {m}
+        </span>
       ),
     },
     {
@@ -141,7 +178,7 @@ export default function MethodsPage() {
       key: "prompt",
       width: 100,
       render: (_: unknown, r: LlmAgent) => (
-        <Text type="tertiary" size="small">
+        <Text size="small" style={{ color: "rgba(71, 85, 105, 0.86)" }}>
           {(r.system_prompt ?? "").trim() ? "已自定义" : "默认角色"}
         </Text>
       ),
@@ -151,7 +188,10 @@ export default function MethodsPage() {
       dataIndex: "key_hint",
       key: "key_hint",
       render: (h: string) => (
-        <Text type="tertiary" size="small" style={{ fontFamily: "monospace" }}>
+        <Text
+          size="small"
+          style={{ fontFamily: "monospace", color: "rgba(51, 65, 85, 0.84)" }}
+        >
           {h}
         </Text>
       ),
@@ -190,14 +230,22 @@ export default function MethodsPage() {
       style={{ width: "100%", alignItems: "stretch" }}
     >
       <Card
-        bordered
-        shadows="hover"
+        bordered={false}
         style={fullWidthCard}
-        title={<Title heading={5}>测评方法 · 测评智能体</Title>}
+        className="tech-enter tech-enter-1"
+        title={<Title heading={5} style={{ color: "#0f172a" }}>智能体配置 · 审查智能体</Title>}
+        headerLine={false}
+        bodyStyle={{
+          padding: "24px",
+          background:
+            "radial-gradient(circle at top left, rgba(56, 189, 248, 0.14), transparent 24%), linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(247, 248, 255, 0.88))",
+          borderRadius: 24,
+          border: "1px solid rgba(255, 255, 255, 0.9)",
+        }}
       >
-        <Paragraph type="secondary" style={{ marginBottom: 20 }}>
+        <Paragraph style={{ marginBottom: 20, color: "rgba(51, 65, 85, 0.88)" }}>
           配置多家大模型（DeepSeek、OpenAI 或任意 OpenAI 兼容接口）。API Key
-          仅存于本机数据库，请勿在生产环境明文存储敏感密钥。可在下方填写「角色与评审要求」提示词；留空则使用内置评审专家角色。智能体可生成分项建议或完整评审报告（含分项意见），最终结论建议人工复核。
+          仅存于本机数据库，请勿在生产环境明文存储敏感密钥。可在下方填写「角色与审查口径」提示词；留空则使用内置问题审查专家角色。这里更推荐你约束“审查口径、问题严重程度、证据原则”，而不是去定义输出格式，因为输出 JSON 结构和审查维度会由系统硬性控制。
         </Paragraph>
         <form onSubmit={(e) => void onCreate(e)}>
           <div
@@ -215,6 +263,7 @@ export default function MethodsPage() {
                 value={name}
                 onChange={setName}
                 placeholder="如：DeepSeek 评审"
+                style={techInputStyle}
               />
             </div>
             <div>
@@ -240,6 +289,7 @@ export default function MethodsPage() {
                 value={model}
                 onChange={setModel}
                 placeholder="deepseek-chat / gpt-4o-mini"
+                style={techInputStyle}
               />
             </div>
             {provider === "custom" ? (
@@ -251,6 +301,7 @@ export default function MethodsPage() {
                   value={apiBase}
                   onChange={setApiBase}
                   placeholder="https://api.example.com/v1"
+                  style={techInputStyle}
                 />
               </div>
             ) : null}
@@ -264,28 +315,38 @@ export default function MethodsPage() {
                 onChange={setApiKey}
                 placeholder="sk-…"
                 autoComplete="off"
+                style={techInputStyle}
               />
             </div>
             <div style={{ gridColumn: "1 / -1" }}>
               <Text strong style={{ display: "block", marginBottom: 8 }}>
-                角色与评审要求（可选，system 提示词）
+                角色与审查口径（可选，system 提示词）
               </Text>
+              <Paragraph size="small" style={{ margin: "0 0 8px", color: "rgba(71, 85, 105, 0.86)" }}>
+                建议写“你是谁、偏重哪些风险、遇到材料缺失时如何判断”，不要再要求模型输出分数或自己定义 JSON 格式。
+              </Paragraph>
               <TextArea
                 value={systemPrompt}
                 onChange={setSystemPrompt}
-                placeholder="例如：你负责某市政务云项目方案评审，侧重数据主权与等保合规；语气正式、结论明确。"
-                rows={4}
-                style={{ fontFamily: "monospace", fontSize: 12 }}
+                placeholder="例如：你负责政企大模型项目方案审查，重点关注数据合规、安全边界、验收可操作性；材料缺失时明确写“未见材料说明”。"
+                rows={8}
+                style={{ ...techInputStyle, fontFamily: "monospace", fontSize: 12 }}
               />
+              <Space style={{ marginTop: 10 }}>
+                <Button theme="light" type="tertiary" onClick={applyRecommendedPromptForCreate}>
+                  填入推荐提示词
+                </Button>
+              </Space>
             </div>
             <div style={{ display: "flex", alignItems: "flex-end" }}>
               <Button
-                htmlType="submit"
+              htmlType="submit"
                 theme="solid"
                 type="primary"
                 loading={busy}
+                style={techPrimaryBtn}
               >
-                添加智能体
+              添加审查智能体
               </Button>
             </div>
           </div>
@@ -297,9 +358,9 @@ export default function MethodsPage() {
           style={{
             padding: "10px 12px",
             borderRadius: 6,
-            background: "rgba(var(--semi-red-0), 1)",
-            border: "1px solid rgba(var(--semi-red-2), 1)",
-            color: "rgba(var(--semi-red-9), 1)",
+            background: "rgba(80, 22, 26, 0.65)",
+            border: "1px solid rgba(255, 122, 122, 0.2)",
+            color: "#ffd7d7",
             fontSize: 14,
             width: "100%",
           }}
@@ -312,9 +373,9 @@ export default function MethodsPage() {
           style={{
             padding: "10px 12px",
             borderRadius: 6,
-            background: "rgba(var(--semi-green-0), 1)",
-            border: "1px solid rgba(var(--semi-green-2), 1)",
-            color: "rgba(var(--semi-green-9), 1)",
+            background: "rgba(18, 74, 57, 0.58)",
+            border: "1px solid rgba(147, 251, 207, 0.18)",
+            color: "#d8ffea",
             fontSize: 14,
             width: "100%",
           }}
@@ -325,27 +386,38 @@ export default function MethodsPage() {
 
       {editId != null ? (
         <Card
-          bordered
-          shadows="hover"
+          bordered={false}
           style={fullWidthCard}
-          title={<Title heading={6}>编辑提示词</Title>}
+          className="tech-enter tech-enter-2"
+        title={<Title heading={6} style={{ color: "#0f172a" }}>编辑提示词</Title>}
+          headerLine={false}
+          bodyStyle={{
+            padding: 24,
+            background: "linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(247, 248, 255, 0.88))",
+            borderRadius: 24,
+            border: "1px solid rgba(255, 255, 255, 0.9)",
+          }}
         >
-          <Paragraph type="tertiary" size="small" style={{ marginTop: -8 }}>
-            正在编辑 ID {editId} 的智能体。保存后，后续「打分建议」与「完整评审报告」均会附带此说明（输出格式仍由系统约束）。
+          <Paragraph size="small" style={{ marginTop: -8, color: "rgba(71, 85, 105, 0.86)" }}>
+            正在编辑 ID {editId} 的智能体。保存后，新的问题审查流也会使用这段提示词；系统仍会额外附加当前审查维度和输出格式约束。
           </Paragraph>
           <TextArea
             value={editPrompt}
             onChange={setEditPrompt}
-            rows={6}
-            style={{ fontFamily: "monospace", fontSize: 12, marginBottom: 12 }}
-            placeholder="角色、侧重点、行业要求…"
+            rows={10}
+            style={{ ...techInputStyle, fontFamily: "monospace", fontSize: 12, marginBottom: 12 }}
+            placeholder="角色、审查口径、风险偏好、材料缺失时的判断原则…"
           />
           <Space>
+            <Button theme="light" type="tertiary" onClick={applyRecommendedPromptForEdit}>
+              填入推荐提示词
+            </Button>
             <Button
               theme="solid"
               type="primary"
               loading={editBusy}
               onClick={() => void saveEditPrompt()}
+              style={techPrimaryBtn}
             >
               保存
             </Button>
@@ -357,21 +429,26 @@ export default function MethodsPage() {
       ) : null}
 
       <Card
-        bordered
-        shadows="hover"
+        bordered={false}
         style={fullWidthCard}
-        title={<Title heading={6}>已配置智能体</Title>}
+        className="tech-enter tech-enter-3"
+        title={<Title heading={6} style={{ color: "#0f172a" }}>已配置智能体</Title>}
+        headerLine={false}
         bodyStyle={{
           padding: loading ? 24 : agents.length ? 0 : 24,
           width: "100%",
+          background: "linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(247, 248, 255, 0.88))",
+          borderRadius: 24,
+          border: "1px solid rgba(255, 255, 255, 0.9)",
         }}
       >
         {loading ? (
           <Spin size="large" style={{ display: "block", margin: "24px auto" }} />
         ) : agents.length === 0 ? (
-          <Text type="tertiary">暂无配置，请在上方添加。</Text>
+          <Text style={{ color: "rgba(71, 85, 105, 0.86)" }}>暂无配置，请在上方添加。</Text>
         ) : (
           <Table
+            className="taskhome-table"
             columns={columns}
             dataSource={agents.map((a) => ({ ...a, key: a.id }))}
             pagination={false}
@@ -383,3 +460,16 @@ export default function MethodsPage() {
     </Space>
   );
 }
+
+const techInputStyle = {
+  background: "rgba(255, 255, 255, 0.9)",
+  border: "1px solid rgba(203, 213, 225, 0.9)",
+  color: "#0f172a",
+} as const;
+
+const techPrimaryBtn = {
+  borderRadius: 999,
+  background: "linear-gradient(90deg, #20d2cc, #2c7ef8)",
+  border: "none",
+  boxShadow: "0 12px 28px rgba(35, 157, 226, 0.28)",
+} as const;

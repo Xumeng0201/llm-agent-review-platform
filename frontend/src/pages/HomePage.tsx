@@ -1,200 +1,137 @@
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
-  IconBarChartVStroked,
-  IconDownload,
-  IconList,
+  IconArrowRight,
 } from "@douyinfe/semi-icons";
-import { Button, Card, Col, Row, Space, Typography } from "@douyinfe/semi-ui";
-import HomeHeroIllustration from "../components/HomeHeroIllustration";
+import { Button, Card, Space, Typography } from "@douyinfe/semi-ui";
+import { getMonthlyCostSummary, listTasks } from "../api";
+import type { MonthlyCostSummary, ReviewTask } from "../types";
 
-const { Title, Paragraph, Text } = Typography;
-
-const featureCardBody = {
-  padding: "20px 20px 22px",
-} as const;
+const { Text, Title } = Typography;
 
 export default function HomePage() {
   const nav = useNavigate();
+  const [items, setItems] = useState<ReviewTask[]>([]);
+  const [monthlyCost, setMonthlyCost] = useState<MonthlyCostSummary | null>(null);
 
-  const features = [
-    {
-      step: "1",
-      title: "按标准分项打分",
-      desc: "十项一级指标逐项录入与复核，对齐内置评测框架与红线规则。",
-      icon: (
-        <span
-          style={{
-            display: "inline-flex",
-            width: 48,
-            height: 48,
-            borderRadius: 12,
-            alignItems: "center",
-            justifyContent: "center",
-            background: "rgba(var(--semi-blue-0), 1)",
-            color: "rgba(var(--semi-blue-6), 1)",
-          }}
-        >
-          <IconList style={{ fontSize: 26 }} />
-        </span>
-      ),
-    },
-    {
-      step: "2",
-      title: "自动汇总结论",
-      desc: "依据得分与一票否决、重点项等规则，自动生成通过 / 整改 / 不通过等结论。",
-      icon: (
-        <span
-          style={{
-            display: "inline-flex",
-            width: 48,
-            height: 48,
-            borderRadius: 12,
-            alignItems: "center",
-            justifyContent: "center",
-            background: "rgba(var(--semi-blue-0), 1)",
-            color: "rgba(var(--semi-blue-6), 1)",
-          }}
-        >
-          <IconBarChartVStroked style={{ fontSize: 26 }} />
-        </span>
-      ),
-    },
-    {
-      step: "3",
-      title: "快速导出报告",
-      desc: "一键生成 HTML 评审报告，支持浏览器打印或另存为 PDF，便于归档与汇报。",
-      icon: (
-        <span
-          style={{
-            display: "inline-flex",
-            width: 48,
-            height: 48,
-            borderRadius: 12,
-            alignItems: "center",
-            justifyContent: "center",
-            background: "rgba(var(--semi-blue-0), 1)",
-            color: "rgba(var(--semi-blue-6), 1)",
-          }}
-        >
-          <IconDownload style={{ fontSize: 26 }} />
-        </span>
-      ),
-    },
-  ];
+  function formatMoney(value: number | null | undefined, currency: "USD" | "CNY") {
+    if (value == null || Number.isNaN(value)) return "—";
+    return new Intl.NumberFormat("zh-CN", {
+      style: "currency",
+      currency,
+      minimumFractionDigits: value < 1 ? 4 : 2,
+      maximumFractionDigits: value < 1 ? 4 : 2,
+    }).format(value);
+  }
+
+  useEffect(() => {
+    void Promise.all([
+      listTasks().catch(() => []),
+      getMonthlyCostSummary().catch(() => null),
+    ]).then(([tasks, monthly]) => {
+      setItems(tasks);
+      setMonthlyCost(monthly);
+    });
+  }, []);
+
+  const completed = items.filter((x) => x.review_status === "completed").length;
+  const running = items.filter((x) => x.review_status === "in_progress").length;
 
   return (
     <Card
-      bordered
-      shadows="hover"
-      style={{ width: "100%", overflow: "hidden" }}
-      bodyStyle={{
-        padding: "clamp(28px, 5vw, 56px) clamp(20px, 4vw, 40px) clamp(36px, 6vw, 72px)",
+      bordered={false}
+      className="tech-enter tech-enter-1"
+      style={{
+        borderRadius: 28,
+        border: "1px solid rgba(255, 255, 255, 0.9)",
+        background: "linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(247, 248, 255, 0.88))",
+        boxShadow: "0 24px 60px rgba(111, 123, 168, 0.14)",
       }}
+      bodyStyle={{ padding: "24px 24px 26px" }}
     >
-      <Row gutter={[40, 48]} type="flex" align="top">
-        <Col xs={24} xl={15}>
-          <Title
-            heading={1}
-            style={{
-              margin: "0 0 12px",
-              fontSize: "clamp(1.65rem, 4vw, 2.25rem)",
-              letterSpacing: "-0.03em",
-              lineHeight: 1.25,
-            }}
-          >
-            智能化方案评审平台
-          </Title>
-          <Paragraph
-            type="secondary"
-            style={{
-              margin: "0 0 clamp(28px, 5vw, 44px)",
-              fontSize: 17,
-              lineHeight: 1.7,
-            }}
-          >
-            专业、标准、高效的方案评审与报告生成
-          </Paragraph>
+        <Title heading={2} style={{ color: "#0f172a", margin: "0 0 18px" }}>
+          项目评审任务控制台
+        </Title>
 
-          <Text
-            strong
-            style={{
-              fontSize: 15,
-              letterSpacing: "0.06em",
-              color: "rgba(var(--semi-grey-8), 1)",
-            }}
-          >
-            核心功能
-          </Text>
-
-          <Row gutter={[16, 16]} style={{ marginTop: 18 }}>
-            {features.map((f) => (
-              <Col xs={24} sm={24} md={8} key={f.step}>
-                <Card
-                  bordered={false}
-                  className="home-feature-card"
-                  bodyStyle={featureCardBody}
-                  style={{ height: "100%" }}
-                >
-                  <div style={{ marginBottom: 14 }}>{f.icon}</div>
-                  <Title heading={6} style={{ margin: "0 0 8px" }}>
-                    {f.step}. {f.title}
-                  </Title>
-                  <Paragraph
-                    type="tertiary"
-                    size="small"
-                    style={{ margin: 0, lineHeight: 1.65 }}
-                  >
-                    {f.desc}
-                  </Paragraph>
-                </Card>
-              </Col>
-            ))}
-          </Row>
-        </Col>
-
-        <Col xs={24} xl={9}>
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              minHeight: 280,
-            }}
-          >
-            <HomeHeroIllustration />
+        <div className="taskhome-stat-row">
+          <div className="taskhome-stat-card">
+            <Text className="taskhome-stat-label">任务总数</Text>
+            <div className="taskhome-stat-value">{items.length}</div>
           </div>
-        </Col>
-      </Row>
+          <div className="taskhome-stat-card">
+            <Text className="taskhome-stat-label">评审中</Text>
+            <div className="taskhome-stat-value">{running}</div>
+          </div>
+          <div className="taskhome-stat-card">
+            <Text className="taskhome-stat-label">已完成</Text>
+            <div className="taskhome-stat-value">{completed}</div>
+          </div>
+          <div className="taskhome-stat-card">
+            <Text className="taskhome-stat-label">本月预计成本</Text>
+            <div className="taskhome-stat-value" style={{ fontSize: 24 }}>
+              {formatMoney(monthlyCost?.estimated_cost_high_cny ?? 0, "CNY")}
+            </div>
+          </div>
+        </div>
 
-      <div
-        style={{
-          marginTop: "clamp(48px, 8vw, 96px)",
-          paddingTop: "clamp(40px, 7vw, 72px)",
-          borderTop: "1px solid rgba(var(--semi-border-color), 0.5)",
-          display: "flex",
-          justifyContent: "center",
-          width: "100%",
-        }}
-      >
-        <Space wrap spacing="loose" align="center">
+        {monthlyCost ? (
+          <div style={{ marginTop: 14, color: "rgba(71, 85, 105, 0.88)", fontSize: 14, textAlign: "center" }}>
+            {monthlyCost.month} 已创建 {monthlyCost.task_count} 个任务，累计约 {monthlyCost.total_llm_tokens} tokens，
+            费用区间 {formatMoney(monthlyCost.estimated_cost_low_cny, "CNY")} ~ {formatMoney(monthlyCost.estimated_cost_high_cny, "CNY")}。
+          </div>
+        ) : null}
+
+        <Space wrap spacing="medium" style={{ marginTop: 26, justifyContent: "center", width: "100%" }}>
           <Button
             theme="solid"
             type="primary"
             size="large"
-            onClick={() => nav("/tasks/new")}
+            icon={<IconArrowRight />}
+            onClick={() => nav("/tasks/implementation/new")}
+            style={{
+              height: 48,
+              paddingInline: 22,
+              borderRadius: 999,
+              background: "linear-gradient(90deg, #20d2cc, #2c7ef8)",
+              border: "none",
+              boxShadow: "0 14px 28px rgba(35, 157, 226, 0.35)",
+            }}
           >
-            创建评审任务
+            新建实施方案审核
           </Button>
           <Button
-            theme="light"
-            type="primary"
             size="large"
-            onClick={() => nav("/methods")}
+            theme="light"
+            type="tertiary"
+            onClick={() => nav("/tasks/pre-review/new")}
+            style={{
+              height: 48,
+              paddingInline: 22,
+              borderRadius: 999,
+              color: "#0f172a",
+              background: "rgba(255, 255, 255, 0.82)",
+              border: "1px solid rgba(203, 213, 225, 0.92)",
+            }}
           >
-            配置测评智能体
+            新建方案预审
+          </Button>
+          <Button
+            size="large"
+            theme="light"
+            type="tertiary"
+            onClick={() => nav("/methods")}
+            style={{
+              height: 48,
+              paddingInline: 22,
+              borderRadius: 999,
+              color: "#0f172a",
+              background: "rgba(255, 255, 255, 0.82)",
+              border: "1px solid rgba(203, 213, 225, 0.92)",
+            }}
+          >
+            配置审查智能体
           </Button>
         </Space>
-      </div>
     </Card>
   );
 }

@@ -4,11 +4,58 @@ from typing import List, Literal, Optional
 from pydantic import BaseModel, Field, model_validator
 
 ReviewStatus = Literal["in_progress", "completed"]
+AnalysisStatus = Literal["draft", "parsing", "indexed", "reviewing", "reviewed", "failed"]
+ParseStatus = Literal["pending", "parsing", "done", "failed"]
+IssueSeverity = Literal["serious", "major", "minor"]
+IssueStatus = Literal["open", "accepted", "dismissed", "revised"]
+RunStatus = Literal["pending", "running", "done", "failed"]
+RunType = Literal["full", "dimension", "retry"]
+UserRole = Literal["admin", "user"]
+ReviewPhase = Literal["pre_review", "implementation"]
+
+
+class LoginBody(BaseModel):
+    username: str = Field(..., min_length=1, max_length=64)
+    password: str = Field(..., min_length=6, max_length=128)
+
+
+class BootstrapAdminBody(LoginBody):
+    display_name: Optional[str] = Field(None, max_length=128)
+
+
+class UserCreate(BaseModel):
+    username: str = Field(..., min_length=1, max_length=64)
+    display_name: Optional[str] = Field(None, max_length=128)
+    password: str = Field(..., min_length=6, max_length=128)
+    role: UserRole = "user"
+
+
+class UserOut(BaseModel):
+    id: int
+    username: str
+    display_name: str
+    role: UserRole
+    is_active: bool
+    created_at: Optional[datetime]
+
+    class Config:
+        from_attributes = True
+
+
+class AuthOut(BaseModel):
+    token: str
+    user: UserOut
+
+
+class BootstrapStatusOut(BaseModel):
+    needs_bootstrap: bool
 
 
 class TaskCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
     llm_agent_id: Optional[int] = None
+    phase: ReviewPhase = "implementation"
+    project_id: Optional[int] = None
 
 
 class TaskUpdate(BaseModel):
@@ -33,12 +80,23 @@ class TaskOut(BaseModel):
     username: str = "系统"
     llm_agent_id: Optional[int] = None
     review_summary: Optional[str] = None
+    analysis_status: AnalysisStatus = "draft"
+    doc_total_chars: Optional[int] = None
+    doc_total_chunks: Optional[int] = None
+    overall_assessment: Optional[str] = None
+    missing_materials: Optional[str] = None
+    phase: ReviewPhase = "implementation"
+    project_id: Optional[int] = None
+    framework_version_id: Optional[int] = None
 
     class Config:
         from_attributes = True
 
     @classmethod
     def from_task(cls, task, review_status: ReviewStatus, username: str = "系统"):
+        ph = getattr(task, "phase", None) or "implementation"
+        if ph not in ("pre_review", "implementation"):
+            ph = "implementation"
         return cls(
             id=task.id,
             name=task.name,
@@ -50,11 +108,50 @@ class TaskOut(BaseModel):
             username=username,
             llm_agent_id=getattr(task, "llm_agent_id", None),
             review_summary=getattr(task, "review_summary", None),
+            analysis_status=getattr(task, "analysis_status", "draft"),
+            doc_total_chars=getattr(task, "doc_total_chars", None),
+            doc_total_chunks=getattr(task, "doc_total_chunks", None),
+            overall_assessment=getattr(task, "overall_assessment", None),
+            missing_materials=getattr(task, "missing_materials", None),
+            phase=ph,  # type: ignore[arg-type]
+            project_id=getattr(task, "project_id", None),
+            framework_version_id=getattr(task, "framework_version_id", None),
         )
 
 
+class ProjectCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255)
+    unit_name: Optional[str] = Field(None, max_length=255)
+    external_code: Optional[str] = Field(None, max_length=128)
+
+
+class ProjectOut(BaseModel):
+    id: int
+    name: str
+    unit_name: Optional[str]
+    external_code: Optional[str]
+    created_at: Optional[datetime]
+
+    class Config:
+        from_attributes = True
+
+
+class FrameworkVersionOut(BaseModel):
+    id: int
+    phase: str
+    version_seq: int
+    original_filename: str
+    created_at: Optional[datetime]
+    text_char_count: int
+
+
+class FrameworkCurrentResponse(BaseModel):
+    phase: str
+    current: Optional[FrameworkVersionOut] = None
+
+
 class ScoreUpsert(BaseModel):
-    indicator_id: int = Field(..., ge=1, le=10)
+    indicator_id: int = Field(..., ge=1, le=50)
     score: int = Field(..., ge=0, le=10)
     notes: Optional[str] = None
 
@@ -80,6 +177,210 @@ class AttachmentOut(BaseModel):
         from_attributes = True
 
 
+class DocumentFileOut(BaseModel):
+    id: int
+    task_id: int
+    attachment_id: Optional[int]
+    file_name: str
+    file_type: Optional[str]
+    parse_status: ParseStatus
+    page_count: Optional[int]
+    char_count: Optional[int]
+    outline_json: Optional[str]
+    parse_error: Optional[str]
+
+    class Config:
+        from_attributes = True
+
+
+class DocumentChunkOut(BaseModel):
+    id: int
+    task_id: int
+    document_file_id: int
+    chunk_index: int
+    section_title: Optional[str]
+    page_from: Optional[int]
+    page_to: Optional[int]
+    char_count: Optional[int]
+    token_estimate: Optional[int]
+    content: str
+    summary: Optional[str]
+    keywords_json: Optional[str]
+    dimension_hints_json: Optional[str]
+
+    class Config:
+        from_attributes = True
+
+
+class ReviewRunOut(BaseModel):
+    id: int
+    task_id: int
+    agent_id: Optional[int]
+    run_type: RunType
+    status: RunStatus
+    started_at: Optional[datetime]
+    finished_at: Optional[datetime]
+    error_message: Optional[str]
+
+    class Config:
+        from_attributes = True
+
+
+class IssueEvidenceOut(BaseModel):
+    id: int
+    issue_id: int
+    chunk_id: Optional[int]
+    file_name: str
+    page_from: Optional[int]
+    page_to: Optional[int]
+    section_title: Optional[str]
+    quote_text: str
+    rank_score: Optional[int]
+
+    class Config:
+        from_attributes = True
+
+
+class ReviewIssueOut(BaseModel):
+    id: int
+    task_id: int
+    review_run_id: Optional[int]
+    dimension_id: int
+    dimension_key: Optional[str]
+    dimension_title: str
+    severity: IssueSeverity
+    title: str
+    description: str
+    reason: Optional[str]
+    suggestion: Optional[str]
+    needs_supplement: bool
+    manual_review: bool
+    status: IssueStatus
+    evidences: list[IssueEvidenceOut] = []
+
+    class Config:
+        from_attributes = True
+
+
+class ReviewIssueUpdate(BaseModel):
+    severity: Optional[IssueSeverity] = None
+    title: Optional[str] = Field(None, min_length=1, max_length=255)
+    description: Optional[str] = None
+    reason: Optional[str] = None
+    suggestion: Optional[str] = None
+    needs_supplement: Optional[bool] = None
+    manual_review: Optional[bool] = None
+    status: Optional[IssueStatus] = None
+
+
+class ReviewSummaryOut(BaseModel):
+    overall_assessment: Optional[str] = None
+    serious_count: int = 0
+    major_count: int = 0
+    minor_count: int = 0
+    missing_materials: list[str] = []
+    manual_focus: list[str] = []
+
+
+class ReviewIssueListOut(BaseModel):
+    summary: ReviewSummaryOut
+    items: list[ReviewIssueOut]
+
+
+class AnalyzeRunBody(BaseModel):
+    force: bool = False
+
+
+class ReviewRunBody(BaseModel):
+    agent_id: Optional[int] = None
+    dimension_ids: Optional[list[int]] = None
+    force: bool = False
+
+
+class AnalysisStatusOut(BaseModel):
+    task_id: int
+    analysis_status: AnalysisStatus
+    doc_total_chars: Optional[int] = None
+    doc_total_chunks: Optional[int] = None
+    files: list[DocumentFileOut] = []
+
+
+class DimensionTokenEstimateOut(BaseModel):
+    dimension_id: int
+    dimension_title: str
+    retrieved_chunks: int
+    input_tokens: int
+    output_tokens: int
+
+
+class TaskTokenEstimateOut(BaseModel):
+    task_id: int
+    parser_engine: str
+    parser_mode: Optional[str] = None
+    local_chunk_tokens: int
+    llm_chunking_tokens: int
+    review_input_tokens: int
+    review_output_tokens: int
+    total_llm_tokens: int
+    assumptions: list[str] = []
+    dimensions: list[DimensionTokenEstimateOut] = []
+    model_provider: Optional[str] = None
+    model_name: Optional[str] = None
+    price_display_name: Optional[str] = None
+    pricing_source_name: Optional[str] = None
+    pricing_source_url: Optional[str] = None
+    input_price_per_million_usd: Optional[float] = None
+    cached_input_price_per_million_usd: Optional[float] = None
+    output_price_per_million_usd: Optional[float] = None
+    estimated_cost_low_usd: Optional[float] = None
+    estimated_cost_high_usd: Optional[float] = None
+    estimated_cost_low_cny: Optional[float] = None
+    estimated_cost_high_cny: Optional[float] = None
+    exchange_rate_usd_to_cny: float = 7.2
+
+
+class ParserCapabilityOut(BaseModel):
+    preferred_engine: str
+    available_engines: list[str]
+    optional_engines: list[str] = []
+    recommended_engine: str
+    notes: list[str] = []
+
+
+class TaskCostOverviewItemOut(BaseModel):
+    task_id: int
+    total_llm_tokens: int
+    estimated_cost_low_usd: Optional[float] = None
+    estimated_cost_high_usd: Optional[float] = None
+    estimated_cost_low_cny: Optional[float] = None
+    estimated_cost_high_cny: Optional[float] = None
+    price_display_name: Optional[str] = None
+
+
+class CostCompareItemOut(BaseModel):
+    agent_id: int
+    agent_name: str
+    provider: str
+    model: str
+    total_llm_tokens: int
+    estimated_cost_low_usd: Optional[float] = None
+    estimated_cost_high_usd: Optional[float] = None
+    estimated_cost_low_cny: Optional[float] = None
+    estimated_cost_high_cny: Optional[float] = None
+    price_display_name: Optional[str] = None
+    supported: bool = False
+
+
+class MonthlyCostSummaryOut(BaseModel):
+    month: str
+    task_count: int
+    total_llm_tokens: int
+    estimated_cost_low_usd: float = 0
+    estimated_cost_high_usd: float = 0
+    estimated_cost_low_cny: float = 0
+    estimated_cost_high_cny: float = 0
+
+
 class IndicatorReportRow(BaseModel):
     indicator_id: int
     title: str
@@ -92,7 +393,7 @@ class OverallReport(BaseModel):
     task_id: int
     task_name: str
     total_score: int
-    max_total: int = 100
+    max_total: int = 50
     conclusion_code: Literal["pass", "rectify", "reject"]
     conclusion_label: str
     reasons: List[str]
@@ -176,8 +477,16 @@ class AiReportOut(BaseModel):
     agent_name: str
 
 
+class AiReviewRunOut(BaseModel):
+    task: TaskOut
+    report: OverallReport
+    raw_excerpt: str
+    agent_id: int
+    agent_name: str
+
+
 class AiReportApplyItem(BaseModel):
-    indicator_id: int = Field(..., ge=1, le=10)
+    indicator_id: int = Field(..., ge=1, le=50)
     score: int = Field(..., ge=0, le=10)
     notes: str = ""
     opinion: str = ""

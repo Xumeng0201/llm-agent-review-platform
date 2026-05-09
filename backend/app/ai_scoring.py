@@ -13,7 +13,7 @@ from .models import LlmAgent
 
 
 class AiScoreItem(BaseModel):
-    indicator_id: int = Field(..., ge=1, le=10)
+    indicator_id: int = Field(..., ge=1, le=50)
     score: int = Field(..., ge=0, le=10)
     notes: str = Field(default="", max_length=2000)
 
@@ -31,7 +31,7 @@ class AiSuggestResult(BaseModel):
 
 
 class AiReportLine(BaseModel):
-    indicator_id: int = Field(..., ge=1, le=10)
+    indicator_id: int = Field(..., ge=1, le=50)
     score: int = Field(..., ge=0, le=10)
     notes: str = Field(default="", max_length=2000)
     opinion: str = Field(default="", max_length=12000)
@@ -59,30 +59,33 @@ class AiReportResult(BaseModel):
     raw_excerpt: str = ""
 
 
-SUGGEST_FORMAT_RULES = """你必须只输出一个 JSON 对象（不要 Markdown 代码块外壳、不要其它说明文字），结构为：
-{
+def _suggest_format_rules(indicator_count: int) -> str:
+    return f"""你必须只输出一个 JSON 对象（不要 Markdown 代码块外壳、不要其它说明文字），结构为：
+{{
   "items": [
-    {"indicator_id": 1, "score": 0到10的整数, "notes": "该项打分简要依据"},
-    ... 必须包含 indicator_id 从 1 到 10 共 10 条 ...
+    {{"indicator_id": 1, "score": 0到10的整数, "notes": "该项打分简要依据"}},
+    ... 必须包含 indicator_id 从 1 到 {indicator_count} 共 {indicator_count} 条 ...
   ]
-}
-要求：score 为整数；指标 5（数据合规）、指标 7（安全）若方案明显缺失应压低分；信息不足时在 notes 中说明。"""
+}}
+要求：score 为整数；信息不足时在 notes 中明确说明“方案未体现”或“需补充材料”。"""
 
-REPORT_FORMAT_RULES = """你必须只输出一个 JSON 对象（不要 Markdown 代码块外壳、不要其它说明文字），结构为：
-{
+
+def _report_format_rules(indicator_count: int) -> str:
+    return f"""你必须只输出一个 JSON 对象（不要 Markdown 代码块外壳、不要其它说明文字），结构为：
+{{
   "items": [
-    {
+    {{
       "indicator_id": 1,
       "score": 0到10的整数,
       "notes": "该项打分简要依据",
       "opinion": "对该一级指标的详细评审意见，可分段、分要点，专业具体"
-    },
-    ... 必须包含 indicator_id 1～10 共 10 条 ...
+    }},
+    ... 必须包含 indicator_id 1～{indicator_count} 共 {indicator_count} 条 ...
   ],
   "conclusion": "综合评审结论文本：是否建议通过、主要风险与总体判断（多段文字）",
   "highlights": "项目亮点与优势",
   "issues": "存在问题、整改建议与需补充材料（多段文字）"
-}
+}}
 要求：opinion / conclusion / highlights / issues 均用中文书面语，条理清晰。"""
 
 
@@ -93,22 +96,24 @@ def _default_role_preamble() -> str:
     )
 
 
-def build_system_for_suggest(agent: LlmAgent) -> str:
+def build_system_for_suggest(agent: LlmAgent, indicator_count: int) -> str:
     custom = (agent.system_prompt or "").strip()
+    rules = _suggest_format_rules(indicator_count)
     if custom:
-        return custom + "\n\n【以下为输出格式硬性要求，必须遵守】\n" + SUGGEST_FORMAT_RULES
-    return _default_role_preamble() + "\n\n【以下为输出格式硬性要求，必须遵守】\n" + SUGGEST_FORMAT_RULES
+        return custom + "\n\n【以下为输出格式硬性要求，必须遵守】\n" + rules
+    return _default_role_preamble() + "\n\n【以下为输出格式硬性要求，必须遵守】\n" + rules
 
 
-def build_system_for_report(agent: LlmAgent) -> str:
+def build_system_for_report(agent: LlmAgent, indicator_count: int) -> str:
     custom = (agent.system_prompt or "").strip()
+    rules = _report_format_rules(indicator_count)
     if custom:
-        return custom + "\n\n【以下为输出格式硬性要求，必须遵守】\n" + REPORT_FORMAT_RULES
+        return custom + "\n\n【以下为输出格式硬性要求，必须遵守】\n" + rules
     return (
         _default_role_preamble()
         + "你需要输出完整评审报告所需的结构化结果（分项分数、分项意见、综合结论、亮点与整改建议）。\n\n"
         + "【以下为输出格式硬性要求，必须遵守】\n"
-        + REPORT_FORMAT_RULES
+        + rules
     )
 
 
@@ -136,9 +141,15 @@ def build_user_task_message(
     task_name: str,
     proposal_text: str,
     attachment_names: List[str],
+    attachment_evidence: str = "",
 ) -> str:
     framework_block = _framework_prompt_block(fw)
     att = "、".join(attachment_names) if attachment_names else "（无文件名列表，仅见正文）"
+    attachment_section = (
+        f"\n## 已抽取附件正文（节选）\n{attachment_evidence[:18000]}\n"
+        if attachment_evidence.strip()
+        else "\n## 已抽取附件正文（节选）\n（暂未抽取到可直接读取的附件正文，请至少参考附件文件名与方案说明）\n"
+    )
     return f"""请根据下列材料完成评审任务。
 
 ## 任务名称
@@ -149,8 +160,9 @@ def build_user_task_message(
 
 ## 方案正文/摘要（可能不完整，请结合常识谨慎判断）
 {proposal_text[:12000]}
+{attachment_section}
 
-## 评审框架（共 10 项一级指标，每项满分 10 分，总分 100）
+## 评审框架（共 {len(fw.get("indicators", []))} 项一级指标，每项满分 10 分）
 {framework_block}
 """
 
@@ -161,9 +173,13 @@ def run_ai_suggest(
     task_name: str,
     proposal_text: str,
     attachment_names: List[str],
+    attachment_evidence: str = "",
 ) -> AiSuggestResult:
-    system = build_system_for_suggest(agent)
-    user = build_user_task_message(fw, task_name, proposal_text, attachment_names)
+    indicator_count = len(fw.get("indicators", []))
+    system = build_system_for_suggest(agent, indicator_count)
+    user = build_user_task_message(
+        fw, task_name, proposal_text, attachment_names, attachment_evidence
+    )
     messages = [
         {"role": "system", "content": system},
         {"role": "user", "content": user},
@@ -187,7 +203,7 @@ def run_ai_suggest(
             continue
     by_id = {x.indicator_id: x for x in items}
     ordered: List[AiScoreItem] = []
-    for i in range(1, 11):
+    for i in range(1, indicator_count + 1):
         if i in by_id:
             ordered.append(by_id[i])
         else:
@@ -201,9 +217,13 @@ def run_ai_report(
     task_name: str,
     proposal_text: str,
     attachment_names: List[str],
+    attachment_evidence: str = "",
 ) -> AiReportResult:
-    system = build_system_for_report(agent)
-    user = build_user_task_message(fw, task_name, proposal_text, attachment_names)
+    indicator_count = len(fw.get("indicators", []))
+    system = build_system_for_report(agent, indicator_count)
+    user = build_user_task_message(
+        fw, task_name, proposal_text, attachment_names, attachment_evidence
+    )
     messages = [
         {"role": "system", "content": system},
         {"role": "user", "content": user},
@@ -227,7 +247,7 @@ def run_ai_report(
             continue
     by_id = {x.indicator_id: x for x in items}
     ordered: List[AiReportLine] = []
-    for i in range(1, 11):
+    for i in range(1, indicator_count + 1):
         if i in by_id:
             ordered.append(by_id[i])
         else:

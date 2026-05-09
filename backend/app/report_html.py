@@ -92,7 +92,7 @@ def build_report_html(report: OverallReport) -> str:
     <p class="meta">方案评审报告 · 生成时间（UTC）：{html.escape(datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"))}</p>
 
     <h2>评分汇总</h2>
-    <p><strong>总分：</strong>{report.total_score} / {report.max_total}（十项一级指标，每项满分 10 分）</p>
+    <p><strong>总分：</strong>{report.total_score} / {report.max_total}（共 {len(report.indicators)} 个一级指标，每项满分 10 分）</p>
 
     <h2>综合结论</h2>
     <div class="conclusion {label_cls}">{html.escape(report.conclusion_label)}</div>
@@ -117,8 +117,7 @@ def build_report_html(report: OverallReport) -> str:
 
     <h2>说明</h2>
     <p class="meta" style="margin:0">
-      本报告依据系统内置《大模型与智能体信息化建设项目方案审核评测框架》生成；
-      评分与结论规则见系统说明。可用浏览器「打印 → 另存为 PDF」导出 PDF。
+      本报告依据系统当前配置的项目方案审核评测框架生成。可用浏览器「打印 → 另存为 PDF」导出 PDF。
     </p>
   </div>
 </body>

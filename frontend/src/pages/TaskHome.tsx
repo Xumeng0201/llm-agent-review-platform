@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   IconDeleteStroked,
@@ -17,10 +17,11 @@ import {
   Spin,
   Table,
   Tag,
+  Toast,
   Typography,
 } from "@douyinfe/semi-ui";
-import { deleteTask, listTasks, reportDownloadUrl } from "../api";
-import type { ReviewTask } from "../types";
+import { deleteTask, downloadIssueReportWord, getTaskCostOverview, listTasks } from "../api";
+import type { ReviewPhase, ReviewTask, TaskCostOverviewItem } from "../types";
 
 const { Title, Text } = Typography;
 
@@ -28,13 +29,30 @@ type StatusFilter = "all" | "in_progress" | "completed";
 
 function formatDateTime(iso: string | null): string {
   if (!iso) return "—";
-  const d = new Date(iso);
-  const p = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  const normalized =
+    /(?:Z|[+-]\d{2}:\d{2})$/.test(iso) || iso.includes("/")
+      ? iso
+      : `${iso.replace(" ", "T")}Z`;
+  const d = new Date(normalized);
+  if (Number.isNaN(d.getTime())) return "—";
+  return new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  })
+    .format(d)
+    .replace(/\//g, "-");
 }
 
-export default function TaskHome() {
+export default function TaskHome({ phase }: { phase: ReviewPhase }) {
   const nav = useNavigate();
+  const newTaskPath = phase === "pre_review" ? "/tasks/pre-review/new" : "/tasks/implementation/new";
+  const phaseTitle = phase === "pre_review" ? "方案预审" : "实施方案审核";
   const [items, setItems] = useState<ReviewTask[]>([]);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -42,22 +60,38 @@ export default function TaskHome() {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
+  const [costMap, setCostMap] = useState<Record<number, TaskCostOverviewItem>>({});
 
-  async function load() {
+  function formatMoney(value: number | null | undefined, currency: "USD" | "CNY") {
+    if (value == null || Number.isNaN(value)) return "—";
+    return new Intl.NumberFormat("zh-CN", {
+      style: "currency",
+      currency,
+      minimumFractionDigits: value < 1 ? 4 : 2,
+      maximumFractionDigits: value < 1 ? 4 : 2,
+    }).format(value);
+  }
+
+  const load = useCallback(async () => {
     setLoading(true);
     setErr(null);
     try {
-      setItems(await listTasks());
+      const [tasks, costs] = await Promise.all([
+        listTasks(phase),
+        getTaskCostOverview().catch(() => []),
+      ]);
+      setItems(tasks);
+      setCostMap(Object.fromEntries(costs.map((item) => [item.task_id, item])));
     } catch (e) {
       setErr(e instanceof Error ? e.message : "加载失败");
     } finally {
       setLoading(false);
     }
-  }
+  }, [phase]);
 
   useEffect(() => {
     void load();
-  }, []);
+  }, [load]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -82,7 +116,7 @@ export default function TaskHome() {
   }, [totalPages]);
 
   async function onDelete(id: number, name: string) {
-    if (!confirm(`确定删除评审任务「${name}」？相关附件与打分将一并删除。`)) return;
+    if (!confirm(`确定删除评审任务「${name}」？相关附件与历史审查结果将一并删除。`)) return;
     try {
       await deleteTask(id);
       await load();
@@ -93,16 +127,11 @@ export default function TaskHome() {
 
   const columns = [
     {
-      title: "序号",
-      dataIndex: "rowNo",
-      width: 72,
-    },
-    {
       title: "任务名称",
       dataIndex: "name",
       ellipsis: true,
       render: (text: string) => (
-        <Text strong style={{ color: "rgba(var(--semi-grey-9), 1)" }}>
+        <Text strong style={{ color: "#0f172a" }}>
           {text}
         </Text>
       ),
@@ -112,63 +141,91 @@ export default function TaskHome() {
       dataIndex: "created_at",
       width: 176,
       render: (iso: string | null) => (
-        <span style={{ fontFamily: "monospace", fontSize: 12 }}>
+        <span style={{ fontFamily: "monospace", fontSize: 12, color: "rgba(51, 65, 85, 0.82)" }}>
           {formatDateTime(iso)}
         </span>
       ),
     },
     {
-      title: "用户名",
-      dataIndex: "username",
-      width: 100,
-      render: (u: string) => u ?? "—",
-    },
-    {
-      title: "评审状态",
+      title: "状态",
       dataIndex: "review_status",
-      width: 100,
+      width: 120,
       render: (s: ReviewTask["review_status"]) =>
         s === "completed" ? (
-          <Tag color="green" size="large">
+          <Tag
+            size="large"
+            shape="circle"
+            style={{
+              color: "#166534",
+              background: "rgba(220, 252, 231, 0.9)",
+              border: "1px solid rgba(134, 239, 172, 0.95)",
+            }}
+          >
             已完成
           </Tag>
         ) : (
-          <Tag color="blue" size="large">
-            进行中
+          <Tag
+            size="large"
+            shape="circle"
+            style={{
+              color: "#1d4ed8",
+              background: "rgba(219, 234, 254, 0.92)",
+              border: "1px solid rgba(147, 197, 253, 0.95)",
+            }}
+          >
+            评审中
           </Tag>
         ),
     },
     {
+      title: "预计成本",
+      dataIndex: "id",
+      width: 180,
+      render: (_: unknown, record: ReviewTask) => {
+        const cost = costMap[record.id];
+        if (!cost || cost.estimated_cost_low_cny == null || cost.estimated_cost_high_cny == null) {
+          return <Text style={{ color: "rgba(100, 116, 139, 0.84)" }}>—</Text>;
+        }
+        return (
+          <div>
+            <Text strong style={{ color: "#0f172a" }}>
+              {formatMoney(cost.estimated_cost_low_cny, "CNY")} ~ {formatMoney(cost.estimated_cost_high_cny, "CNY")}
+            </Text>
+            <div style={{ fontSize: 12, color: "rgba(71, 85, 105, 0.76)", marginTop: 2 }}>
+              {cost.total_llm_tokens} tokens
+            </div>
+          </div>
+        );
+      },
+    },
+    {
       title: "操作",
       dataIndex: "id",
-      width: 140,
+      width: 170,
       align: "center" as const,
       render: (_: unknown, record: ReviewTask) => (
-        <Space spacing={4}>
+        <Space spacing={6}>
           <Button
             icon={<IconFile />}
             theme="borderless"
             type="tertiary"
-            aria-label="查看"
-            onClick={() => nav(`/tasks/${record.id}`)}
+            aria-label="进入评审"
+            style={{ color: "#4f46e5" }}
+            onClick={() => nav(`/tasks/${record.id}/materials`)}
           />
           {record.review_status === "completed" ? (
-            <a
-              href={reportDownloadUrl(record.id)}
-              download
-              aria-label="下载报告"
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                justifyContent: "center",
-                width: 32,
-                height: 32,
-                borderRadius: 6,
-                color: "rgba(var(--semi-blue-6), 1)",
-              }}
-            >
-              <IconDownload />
-            </a>
+            <Button
+              icon={<IconDownload />}
+              theme="borderless"
+              type="tertiary"
+              aria-label="下载 Word 审查意见书到本地"
+              style={{ color: "#93fbcf" }}
+              onClick={() =>
+                void downloadIssueReportWord(record.id, record.name).catch((e) =>
+                  Toast.error(e instanceof Error ? e.message : "下载失败")
+                )
+              }
+            />
           ) : null}
           <Button
             icon={<IconDeleteStroked />}
@@ -182,115 +239,109 @@ export default function TaskHome() {
     },
   ];
 
-  const dataSource = slice.map((t, idx) => ({
+  const dataSource = slice.map((t) => ({
     ...t,
     key: t.id,
-    rowNo: (pageSafe - 1) * pageSize + idx + 1,
   }));
 
   return (
-    <Card bordered shadows="hover" bodyStyle={{ padding: 0 }}>
-      <div
-        style={{
-          padding: "20px 24px",
-          borderBottom: "1px solid rgba(var(--semi-border-color), 1)",
-          display: "flex",
-          flexWrap: "wrap",
-          gap: 16,
-          alignItems: "center",
-          justifyContent: "space-between",
-        }}
-      >
-        <Title heading={5} style={{ margin: 0 }}>
-          评审任务
-        </Title>
-        <Space wrap style={{ justifyContent: "flex-end" }}>
-          <Input
-            prefix={<IconSearch />}
-            placeholder="搜索评审任务名称"
-            value={search}
-            onChange={setSearch}
-            style={{ width: 220 }}
-          />
-          <Select
-            value={statusFilter}
-            onChange={(v) => setStatusFilter(v as StatusFilter)}
-            style={{ width: 128 }}
-            optionList={[
-              { label: "全部", value: "all" },
-              { label: "进行中", value: "in_progress" },
-              { label: "已完成", value: "completed" },
-            ]}
-          />
-          <Button theme="solid" type="primary" onClick={() => nav("/tasks/new")}>
-            + 新增评审
-          </Button>
-        </Space>
-      </div>
-
-      {err ? (
-        <div
-          style={{
-            margin: 16,
-            padding: "10px 12px",
-            borderRadius: 6,
-            background: "rgba(var(--semi-red-0), 1)",
-            border: "1px solid rgba(var(--semi-red-2), 1)",
-            color: "rgba(var(--semi-red-9), 1)",
-            fontSize: 14,
-          }}
-          role="alert"
-        >
-          {err}
+    <Space vertical spacing="loose" style={{ width: "100%", alignItems: "stretch" }}>
+      <Card bordered={false} style={shellCard} className="tech-enter tech-enter-1" bodyStyle={{ padding: 0 }}>
+        <div className="taskhome-toolbar">
+          <Title heading={5} style={{ margin: 0, color: "#0f172a" }}>
+            {phaseTitle} · 任务列表
+          </Title>
+          <Space wrap style={{ justifyContent: "flex-end" }}>
+            <Button theme="solid" type="primary" onClick={() => nav(newTaskPath)} style={techPrimaryBtn}>
+              + 新建{phaseTitle}任务
+            </Button>
+            <Input
+              prefix={<IconSearch />}
+              placeholder="搜索评审任务名称"
+              value={search}
+              onChange={setSearch}
+              style={toolbarInputStyle}
+            />
+            <Select
+              className="taskhome-filter-select"
+              value={statusFilter}
+              onChange={(v) => setStatusFilter(v as StatusFilter)}
+              style={{ width: 144 }}
+              optionList={[
+                { label: "全部状态", value: "all" },
+                { label: "评审中", value: "in_progress" },
+                { label: "已完成", value: "completed" },
+              ]}
+            />
+          </Space>
         </div>
-      ) : null}
 
-      <div style={{ padding: loading || total === 0 ? 24 : 0 }}>
-        {loading ? (
-          <Spin size="large" style={{ display: "block", margin: "48px auto" }} />
-        ) : total === 0 ? (
-          <Empty
-            title="暂无任务"
-            description="点击右上角「新增评审」创建任务。"
-            style={{ padding: "32px 0" }}
-          />
-        ) : (
-          <Table
-            columns={columns}
-            dataSource={dataSource}
-            pagination={false}
-            size="small"
-          />
-        )}
-      </div>
+        {err ? (
+          <div style={{ margin: 16 }} className="tech-alert tech-alert-danger" role="alert">
+            {err}
+          </div>
+        ) : null}
 
-      {!loading && total > 0 ? (
-        <div
-          style={{
-            padding: "16px 24px",
-            borderTop: "1px solid rgba(var(--semi-border-color), 1)",
-            display: "flex",
-            flexWrap: "wrap",
-            gap: 12,
-            alignItems: "center",
-            justifyContent: "space-between",
-          }}
-        >
-          <Typography.Text type="secondary">
-            共 <strong style={{ color: "rgba(var(--semi-grey-9), 1)" }}>{total}</strong> 条
-          </Typography.Text>
-          <Pagination
-            total={total}
-            currentPage={pageSafe}
-            pageSize={pageSize}
-            showSizeChanger
-            pageSizeOpts={[10, 20, 50]}
-            showQuickJumper
-            onPageChange={(p) => setPage(p)}
-            onPageSizeChange={(s) => setPageSize(s)}
-          />
+        <div style={{ padding: loading || total === 0 ? 24 : 0 }}>
+          {loading ? (
+            <Spin size="large" style={{ display: "block", margin: "48px auto" }} />
+          ) : total === 0 ? (
+            <Empty
+              title="暂无任务"
+              description="创建第一个评审任务后，就可以上传材料并触发自动解析与问题审查。"
+              style={{ padding: "40px 0" }}
+            />
+          ) : (
+            <Table
+              className="taskhome-table"
+              columns={columns}
+              dataSource={dataSource}
+              pagination={false}
+              size="small"
+            />
+          )}
         </div>
-      ) : null}
-    </Card>
+
+        {!loading && total > 0 ? (
+          <div className="taskhome-pagination">
+            <Typography.Text style={{ color: "rgba(51, 65, 85, 0.84)" }}>
+              当前筛选结果 <strong style={{ color: "#0f172a" }}>{total}</strong> 条
+            </Typography.Text>
+            <Pagination
+              total={total}
+              currentPage={pageSafe}
+              pageSize={pageSize}
+              showSizeChanger
+              pageSizeOpts={[10, 20, 50]}
+              showQuickJumper
+              onPageChange={(p) => setPage(p)}
+              onPageSizeChange={(s) => setPageSize(s)}
+            />
+          </div>
+        ) : null}
+      </Card>
+    </Space>
   );
 }
+
+const shellCard = {
+  width: "100%",
+  borderRadius: 24,
+  border: "1px solid rgba(255, 255, 255, 0.9)",
+  background: "linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(247, 248, 255, 0.86))",
+  boxShadow: "0 24px 60px rgba(111, 123, 168, 0.14)",
+} as const;
+
+const toolbarInputStyle = {
+  width: 240,
+  background: "rgba(255, 255, 255, 0.88)",
+  border: "1px solid rgba(203, 213, 225, 0.9)",
+  color: "#0f172a",
+} as const;
+
+const techPrimaryBtn = {
+  borderRadius: 999,
+  background: "linear-gradient(90deg, #20d2cc, #2c7ef8)",
+  border: "none",
+  boxShadow: "0 12px 28px rgba(35, 157, 226, 0.28)",
+} as const;

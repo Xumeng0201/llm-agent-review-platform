@@ -2,6 +2,15 @@ fastapi==0.115.6
 uvicorn[standard]==0.32.1
 sqlalchemy==2.0.36
 python-multipart==0.0.17
-pydantic==2.10.3
+pydantic==2.13.1
 pydantic-settings==2.6.1
 httpx==0.28.1
+# python-docx 依赖 lxml；单独写明并先装可避免旧版 pip 解析失败
+lxml>=4.9.0,<7
+python-docx==1.1.2
+pypdf==6.10.2
+Pillow==11.2.1
+pytesseract==0.3.13
+pypdfium2==5.7.0
+# 可选结构化解析增强：安装后会自动优先用于 DOCX / 文本类材料切分
+unstructured==0.18.3
