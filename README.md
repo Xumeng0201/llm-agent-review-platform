@@ -1,176 +1,253 @@
-# 大模型 / 智能体建设方案评审（前后端分离）
+# 项目方案评审平台
 
-以**评审任务**为单位：填写任务名称 → 上传项目方案（及说明）→ 按内置审查维度做**问题清单式审查**（严重 / 一般 / 轻微等问题项与依据）→ 一键下载 **审查意见书**（HTML / Word，可用浏览器打印为 PDF）。
+面向政务 / 信息化项目方案的 **LLM 辅助评审** 系统。以**评审任务**为单位，支持方案预审与实施方案审核两阶段，完成材料解析、问题清单式审查、审查意见书导出，并提供跨项目**记忆比对**能力。
 
-前端 UI 基于 [Semi Design](https://semi.design)（抖音前端团队）组件库，并配合 Tailwind 做少量布局；全局为**浅紫渐变**背景，通过覆盖 Semi 的 `--semi-blue-`* 色阶将主色映射为紫罗兰色系。
-
-## 技术栈
-
-- **后端**：Python 3.9+、FastAPI、SQLAlchemy、SQLite（`backend/data/`）、httpx（调用 OpenAI 兼容大模型接口）
-- **前端**：React 18、TypeScript、Vite 5、`@douyinfe/semi-ui` + `@douyinfe/semi-icons`、Tailwind CSS（基础样式与渐变壳层）
-
-## 重要：数据库结构升级
-
-`v0.2` 起使用新表 `review_tasks`（替代原 `projects` 流程）。启动时若检测到旧版 SQLite 中的 `indicator_scores` 表，会自动 **DROP**（已不再使用分项 0～10 打分）。若你本地仍有极旧版 `backend/data/app.db` 且迁移异常，可**删除该文件**后重启后端，以自动创建新库表。
-
-**附件表列名**：若你曾用过更早期的 `/api/projects` 版本，SQLite 里的 `attachments` 可能仍是 `project_id`。当前代码使用 `task_id`，会导致进入任务详情、加载附件列表时出现 **500 Internal Server Error**。启动后端时会自动执行 `ALTER TABLE ... RENAME COLUMN project_id TO task_id`（需 SQLite 3.25+）；**重启一次 uvicorn** 即可。若迁移失败，可删除 `backend/data/app.db` 后重启。
-
-**测评智能体**：会新建表 `llm_agents`，并为 `review_tasks` 增加可选字段 `llm_agent_id`（启动时 `ALTER TABLE`）。**API Key 以明文写入本地 SQLite，仅适合内网/开发**；生产环境请改用密钥管理服务或对字段加密。
-
-**提示词（v0.2+）**：启动时会为 `llm_agents` 增加 `system_prompt`（`ALTER TABLE`，**重启一次 uvicorn** 即可）。`system_prompt` 用于自定义智能体角色与审查侧重点；留空则使用内置专家角色。任务上的 `review_summary`、亮点与问题等字段仍可供人工或后续流程填写，与**问题审查意见书**导出配合使用。
-
-## 测评智能体（DeepSeek / OpenAI / 自定义）
-
-1. 打开前端 **测评方法**（`/methods`），添加智能体：
-  - **DeepSeek**：提供方选 DeepSeek，模型填 `deepseek-chat`（或官方文档中的模型名），API Key 使用你在 DeepSeek 控制台申请的 Key；请求走 `https://api.deepseek.com/v1`（OpenAI 兼容 Chat Completions）。  
-  - **OpenAI**：提供方选 OpenAI，模型如 `gpt-4o-mini`。  
-  - **自定义**：任意 OpenAI 兼容网关，填写完整 **API Base**（含 `/v1`）与模型名。
-2. **新建评审任务**时可绑定默认智能体；在任务详情中发起**文档解析与问题审查**时使用该智能体（亦可在审查请求中临时指定其他智能体）。
-3. 在 **测评方法** 中可为每个智能体填写 **角色与审查要求**（创建时或表格中铅笔图标编辑）；问题审查的 JSON 结构由后端固定，以保证解析与落库一致。
-4. 审查完成后可在任务中导出 **审查意见书**（问题列表、严重度、依据与建议等），不再提供「按一级指标打 0～10 分」或基于分值的综合结论页。
-
-## 本地运行
-
-### 手动启动操作指南（自己跑起来）
-
-下面假设项目在本机的路径为 **`llm-agent-review-platform` 根目录**（即同时包含 `backend/` 与 `frontend/` 的那一层）。
-
-#### 0. 环境要求
-
-| 组件 | 说明 |
-|------|------|
-| **Python** | 3.9 或以上（与 `backend` 一致即可） |
-| **Node.js** | 建议 18 LTS 或以上（用于运行 Vite / npm） |
-| **终端** | macOS / Linux 用「终端」；Windows 用 PowerShell 或 CMD |
-
-端口约定：**后端 8099**，**前端 5173**（见 `frontend/vite.config.ts` 里对 `/api` 的代理目标）。
-
-#### 1. 第一次使用项目时（每台电脑只需做一次）
-
-在项目**根目录**打开终端，依次执行。
-
-**（1）后端：虚拟环境 + 依赖**
-
-```bash
-cd backend
-python3 -m venv .venv
-```
-
-激活虚拟环境：
-
-- **macOS / Linux**：`source .venv/bin/activate`
-- **Windows（CMD）**：`.venv\Scripts\activate.bat`
-- **Windows（PowerShell）**：`.venv\Scripts\Activate.ps1`
-
-然后安装依赖（若安装 `lxml` / `python-docx` 报错，先升级 pip 再装）：
-
-```bash
-python -m pip install -U pip
-pip install -r requirements.txt
-```
-
-**（2）前端：安装 npm 包**
-
-```bash
-cd ../frontend
-npm install
-```
-
-#### 2. 以后每次手动启动（需要两个终端窗口）
-
-**必须先起后端，再开前端**（或两个都开着即可；前端通过代理访问后端）。
-
-**终端 A —— 启动后端 API**
-
-```bash
-cd /你的路径/llm-agent-review-platform/backend
-source .venv/bin/activate          # Windows 改用上一节的 activate 命令
-uvicorn app.main:app --reload --host 127.0.0.1 --port 8099
-```
-
-看到类似 `Uvicorn running on http://127.0.0.1:8099` 即表示后端已监听。
-
-**终端 B —— 启动前端开发服务器**
-
-```bash
-cd /你的路径/llm-agent-review-platform/frontend
-npm run dev
-```
-
-看到 `Local: http://localhost:5173/` 后，用浏览器打开：
-
-- **应用首页**：[http://127.0.0.1:5173](http://127.0.0.1:5173)
-
-前端会把以 `/api` 开头的请求**代理到** `http://127.0.0.1:8099`，因此一般**不需要**单独在浏览器里打开 8099 来使用界面。
-
-#### 3. 确认是否启动成功
-
-- 后端健康检查：[http://127.0.0.1:8099/api/health](http://127.0.0.1:8099/api/health)
-- 后端接口文档：[http://127.0.0.1:8099/docs](http://127.0.0.1:8099/docs)
-- 前端能打开且「评审任务」等页面不报网络错误，即代理与后端正常。
-
-#### 4. 如何停止
-
-在运行 `uvicorn` 或 `npm run dev` 的终端里按 **`Ctrl + C`** 结束对应进程。两个终端各按一次，前后端就都停了。
-
-#### 5. 常见问题
-
-- **端口被占用**：若 8099 或 5173 已被占用，可关掉占用程序，或自行改端口（改后端启动参数，并同步修改 `frontend/vite.config.ts` 里 `proxy["/api"].target`）。
-- **`ModuleNotFoundError: No module named 'docx'`**：在已激活的 `backend` 虚拟环境里执行 `pip install -r requirements.txt`；仍失败时先 `python -m pip install -U pip`。
-- **前端能开但接口全失败**：确认终端 A 里后端仍在运行，且地址为 **127.0.0.1:8099**。
+前端基于 [Semi Design](https://semi.design) + React；后端为 FastAPI + SQLite，通过 OpenAI 兼容接口调用 DeepSeek / OpenAI 等模型。
 
 ---
 
-### 命令速查（与上文一致）
+## 功能概览
+
+| 模块 | 说明 |
+|------|------|
+| **首页控制台** | 任务总数 / 评审中 / 已完成统计，本月 Token 与费用估算 |
+| **方案预审** | 阶段 `pre_review`，独立任务列表与新建入口 |
+| **实施方案审核** | 阶段 `implementation`，独立任务列表与新建入口 |
+| **评审任务** | 新建时填写任务名称、项目名称、版本，上传 `.docx` 方案与背景说明，绑定审查智能体 |
+| **任务详情（三步）** | ① 解析材料 → ② 查看评审结果 → ③ 编辑并下载报告（HTML / Word 审查意见书） |
+| **审核要点** | 按阶段上传审核要点 Word，新任务绑定当前版本；支持预览提取文本 |
+| **记忆比对** | 方案库浏览、相似检索、两份方案并排对比、全库重建索引 |
+| **智能体配置** | 管理 DeepSeek / OpenAI / 自定义 OpenAI 兼容网关及系统提示词 |
+| **用户管理** | 管理员创建 / 编辑用户（`admin` / `user`） |
+| **个人中心** | 修改显示名、上传头像 |
+
+### 审查方式
+
+- 按内置**审查维度**输出**问题清单**（严重 / 一般 / 轻微），含依据、建议、是否需补材料等字段。
+- **不再**使用「一级指标 0～10 分」式打分；导出物为**审查意见书**（问题列表 + 总体判断）。
+- 支持 Token 用量估算、按维度拆分估算；匹配价目表时可显示费用区间。
+
+### 权限与登录
+
+- 首次启动无用户时，登录页引导**初始化管理员**。
+- 普通功能需登录；`/users` 等管理接口仅 **admin** 可访问。
+- 会话 Token 存于浏览器 `localStorage`，请求头 `Authorization: Bearer …`。
+
+---
+
+## 技术栈
+
+| 层级 | 技术 |
+|------|------|
+| 后端 | Python 3.9+、FastAPI、SQLAlchemy、SQLite（`backend/data/app.db`）、httpx |
+| 文档 | python-docx、lxml、pypdf；可选 `unstructured` 增强 DOCX 结构化切分 |
+| OCR / 图片 | Pillow、pytesseract、pypdfium2（按需） |
+| 前端 | React 18、TypeScript、Vite 5、React Router 6 |
+| UI | `@douyinfe/semi-ui`、`@douyinfe/semi-icons`；Tailwind CSS + 自定义 `index.css` 主题 |
+
+默认端口：**后端 `8099`**，**前端开发服 `5173`**（Vite 将 `/api` 代理到后端）。
+
+---
+
+## 目录结构
+
+```
+llm-agent-review-platform/
+├── backend/
+│   ├── app/
+│   │   ├── main.py              # FastAPI 入口与 REST API
+│   │   ├── models.py            # SQLAlchemy 模型
+│   │   ├── database.py          # SQLite 连接与启动迁移
+│   │   ├── review_engine.py     # 问题审查流水线
+│   │   ├── doc_parse.py         # 材料解析
+│   │   ├── issue_report.py      # 审查意见书 HTML / Word
+│   │   ├── cross_project_memory.py  # 记忆比对与向量检索
+│   │   ├── token_estimator.py   # Token / 费用估算
+│   │   ├── framework.json       # 默认审查框架（实施方案）
+│   │   └── framework_pre_review.json
+│   ├── data/                    # SQLite、上传文件（gitignore，运行时生成）
+│   └── requirements.txt
+├── frontend/
+│   ├── public/                  # favicon、静态登录背景等
+│   ├── src/
+│   │   ├── App.tsx              # 路由
+│   │   ├── api.ts               # API 客户端
+│   │   ├── pages/               # 各业务页面
+│   │   ├── components/          # Layout、UserMenu 等
+│   │   └── theme/pageChrome.ts  # 列表 / 表单 / 详情壳层样式常量
+│   ├── index.html
+│   └── vite.config.ts
+└── scripts/
+    └── tunnel-dxg-con.sh        # 可选：SSH 本地端口转发脚本
+```
+
+---
+
+## 本地运行
+
+### 环境要求
+
+| 组件 | 版本建议 |
+|------|----------|
+| Python | 3.9+ |
+| Node.js | 18 LTS+ |
+| 操作系统 | macOS / Linux / Windows |
+
+### 首次安装
 
 **后端**
 
 ```bash
 cd backend
 python3 -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+python -m pip install -U pip
 pip install -r requirements.txt
-uvicorn app.main:app --reload --host 127.0.0.1 --port 8099
 ```
-
-- 健康检查：[http://127.0.0.1:8099/api/health](http://127.0.0.1:8099/api/health)
-- OpenAPI：[http://127.0.0.1:8099/docs](http://127.0.0.1:8099/docs)
-- 主要 API 前缀：`/api/review-tasks`、`/api/llm-agents`、`/api/framework`
 
 **前端**
 
 ```bash
 cd frontend
 npm install
+```
+
+### 日常启动（两个终端）
+
+**终端 A — 后端**
+
+```bash
+cd backend
+source .venv/bin/activate
+uvicorn app.main:app --reload --host 127.0.0.1 --port 8099
+```
+
+**终端 B — 前端**
+
+```bash
+cd frontend
 npm run dev
 ```
 
-浏览器：[http://127.0.0.1:5173](http://127.0.0.1:5173)（`/api` 由 Vite 代理到 8099）
+浏览器打开 [http://127.0.0.1:5173](http://127.0.0.1:5173)。
 
-**前端路由（摘要）**：`/` 首页；`/tasks` 评审任务列表；`/methods` 测评智能体；`/tasks/new` 新建任务；`/tasks/:id` 任务详情（材料、解析、问题审查与意见书导出等步骤）。
+### 验证
 
-### 生产构建
+| 地址 | 说明 |
+|------|------|
+| [http://127.0.0.1:8099/api/health](http://127.0.0.1:8099/api/health) | 健康检查 |
+| [http://127.0.0.1:8099/docs](http://127.0.0.1:8099/docs) | Swagger 文档 |
+
+停止服务：在对应终端按 `Ctrl + C`。
+
+---
+
+## 前端路由
+
+| 路径 | 页面 |
+|------|------|
+| `/login` | 登录 / 初始化管理员 |
+| `/` | 首页控制台 |
+| `/tasks/pre-review` | 方案预审任务列表 |
+| `/tasks/implementation` | 实施方案任务列表 |
+| `/tasks/pre-review/new` | 新建方案预审任务 |
+| `/tasks/implementation/new` | 新建实施方案任务 |
+| `/tasks/:id/materials` | 任务详情 · 解析材料 |
+| `/tasks/:id/result` | 任务详情 · 评审结果 |
+| `/tasks/:id/report` | 任务详情 · 下载意见书 |
+| `/review-criteria` | 审核要点（分阶段） |
+| `/memory` | 记忆比对 |
+| `/methods` | 智能体列表 |
+| `/methods/new`、`/methods/:id/edit` | 新增 / 编辑智能体 |
+| `/users` | 用户管理（admin） |
+| `/users/new`、`/users/:id/edit` | 新增 / 编辑用户 |
+| `/profile` | 个人中心 |
+
+兼容跳转：`/tasks` → `/tasks/implementation`，`/tasks/new` → `/tasks/implementation/new`。
+
+---
+
+## 主要 API（前缀 `/api`）
+
+| 分组 | 代表接口 |
+|------|----------|
+| 认证 | `POST /auth/login`、`POST /auth/bootstrap-admin`、`GET /auth/me` |
+| 用户 | `GET/POST /users`、`PATCH /users/{id}`（分页 + 搜索） |
+| 智能体 | `GET/POST /llm-agents`、`PATCH/DELETE /llm-agents/{id}` |
+| 任务 | `GET /review-tasks`（分页、阶段、状态、关键词）、`POST /review-tasks`、`GET/PATCH/DELETE /review-tasks/{id}` |
+| 任务指标 | `GET /review-tasks/metrics` |
+| 解析与审查 | `POST /review-tasks/{id}/analyze`、`POST /review-tasks/{id}/review/run` |
+| 问题与报告 | `GET /review-tasks/{id}/issues`、`GET …/issues/report/html|word` |
+| 附件 | `POST/GET/DELETE /review-tasks/{id}/attachments` |
+| 费用 | `GET /review-costs/task-overview?task_ids=…`、`GET /review-costs/monthly-summary` |
+| 审核要点 | `GET /review-framework/{phase}/current`、`POST /review-framework/{phase}/upload` |
+| 记忆 | `GET /memory/library`、`GET /memory/tasks/{id}/similar`、`POST /memory/compare` |
+
+完整定义见 Swagger：`/docs`。
+
+---
+
+## 智能体配置
+
+1. 进入 **智能体配置** → **新增审查智能体**。
+2. 选择提供方并填写模型与 API Key：
+   - **DeepSeek**：模型如 `deepseek-chat`，默认 Base `https://api.deepseek.com/v1`
+   - **OpenAI**：如 `gpt-4o-mini`
+   - **自定义**：填写完整 OpenAI 兼容 **API Base**（含 `/v1`）与模型名
+3. 可选填写 **系统提示词**，定制审查角色与侧重点；留空使用内置专家角色。
+4. 新建任务时选择绑定的智能体；解析与问题审查均使用该配置。
+
+> **安全提示**：API Key 以明文写入本地 SQLite，仅适用于内网 / 开发。生产环境请使用密钥管理服务或加密存储。
+
+---
+
+## 生产构建
 
 ```bash
-cd frontend && npm run build
+cd frontend
+npm run build
 ```
 
-静态资源托管 `frontend/dist`，并将 `/api` 反向代理到 FastAPI。
+产物在 `frontend/dist/`。部署方式：
 
-## 目录说明
+1. 静态托管 `dist`（Nginx、Caddy 等）
+2. 将 `/api` 反向代理到 FastAPI（`8099`）
+3. SPA 需配置 fallback 到 `index.html`
 
+Logo、favicon 等资源位于 `public/`，导航栏 Logo 通过 Vite 打包 `src/assets/brand-logo.png` 引入。
 
-| 路径                                           | 说明                        |
-| -------------------------------------------- | ------------------------- |
-| `backend/app/framework.json`                 | 审查框架（审查维度 `dimensions`、原则等；`indicators` 为历史兼容字段） |
-| `backend/app/issue_report.py`                | 审查意见书 HTML / Word 生成        |
-| `frontend/tailwind.config.cjs`               | Tailwind 主题变量（与 Semi 并存）  |
-| `frontend/src/semi-theme.css`                | 浅紫渐变壳层 + Semi 主色（紫罗兰）覆盖   |
-| `frontend/src/providers/SemiAppProvider.tsx` | `ConfigProvider` 中文语言包    |
+---
 
+## 数据库与迁移
 
-## 后续可扩展
+- 数据库文件：`backend/data/app.db`（首次启动自动建表）
+- 启动时执行 `migrate_sqlite_schema()`，对 SQLite 做轻量 `ALTER TABLE`（如历史 `attachments.project_id` → `task_id`、新增 `llm_agent_id` 等）
+- 若本地库来自极旧版本且迁移失败，可**备份后删除** `backend/data/app.db` 再重启（会丢失本地数据）
+- 上传的方案、头像、审核要点 Word 等亦保存在 `backend/data/` 下
 
-- 登录与角色（申报方 / 审核员 / 管理员）
-- 更细粒度的审查清单与权重（仍可为问题清单式，不必回到分项打分）
-- 服务端 PDF 生成（当前推荐用审查意见书 HTML + 浏览器打印为 PDF）
+---
+
+## 常见问题
+
+| 现象 | 处理 |
+|------|------|
+| 前端能开但接口全失败 | 确认后端在 `127.0.0.1:8099` 运行；检查 Vite `proxy["/api"].target` |
+| 端口占用 | 修改 uvicorn 端口，并同步 `frontend/vite.config.ts` 代理目标 |
+| `ModuleNotFoundError: docx` | 在 backend 虚拟环境中 `pip install -r requirements.txt` |
+| 导航 Logo 不显示 | 执行 `npm run build` 或重启 `npm run dev`；硬刷新浏览器缓存 |
+| 进入任务详情 500 | 多为旧库 schema 不兼容，重启后端触发迁移或重建 `app.db` |
+
+---
+
+## 开发说明
+
+- 审查框架 JSON：`backend/app/framework.json`（实施方案）、`framework_pre_review.json`（方案预审）
+- 前端主题与列表圆角等：`frontend/src/theme/pageChrome.ts`、`frontend/src/index.css`
+- Semi 主题覆盖：`frontend/src/semi-theme.css`
+- CORS 开发环境允许 `http://localhost:5173`、`http://127.0.0.1:5173`
+
+---
+
+## 许可证
+
+内部项目；部署与密钥管理请遵循组织安全规范。
