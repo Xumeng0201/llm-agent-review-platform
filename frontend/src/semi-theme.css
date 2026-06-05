@@ -3,6 +3,7 @@
  * 使 Button、Link、Slider、Progress 等随主题统一到当前视觉语言。
  */
 .app-semi-shell {
+  font-family: var(--app-font-family);
   --semi-blue-0: 245, 247, 255;
   --semi-blue-1: 230, 235, 255;
   --semi-blue-2: 208, 217, 255;
@@ -23,6 +24,10 @@
 }
 
 .app-semi-header.semi-layout-header {
+  position: sticky;
+  top: 0;
+  z-index: 1000;
+  overflow: visible !important;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(255, 255, 255, 0.54)) !important;
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
@@ -92,11 +97,43 @@
 }
 
 .app-semi-main .semi-input-wrapper,
-.app-semi-main .semi-input-textarea-wrapper,
-.app-semi-main .semi-select {
+.app-semi-main .semi-input-textarea-wrapper {
   background: rgba(255, 255, 255, 0.72) !important;
   border-color: rgba(255, 255, 255, 0.88) !important;
   color: #111111 !important;
+}
+
+.app-semi-main .semi-input-wrapper {
+  border-radius: var(--app-input-radius) !important;
+}
+
+.app-semi-main .semi-select {
+  background: rgba(255, 255, 255, 0.98) !important;
+  border-color: rgba(203, 213, 225, 0.95) !important;
+  color: #111111 !important;
+  border-radius: var(--app-select-radius) !important;
+}
+
+.app-semi-main .semi-input-textarea-wrapper {
+  border-radius: 16px !important;
+}
+
+.app-semi-shell .semi-input-wrapper,
+.app-semi-shell .semi-datepicker .semi-input-wrapper {
+  border-radius: var(--app-input-radius) !important;
+}
+
+.app-semi-shell .semi-input-number:not(.semi-page-quickjump-input-number) .semi-input-wrapper {
+  border-radius: var(--app-input-radius) !important;
+}
+
+.app-semi-shell .semi-select,
+.app-semi-shell .semi-select .semi-select-selection {
+  border-radius: var(--app-select-radius) !important;
+}
+
+.app-semi-shell .semi-input-textarea-wrapper {
+  border-radius: 16px !important;
 }
 
 .app-semi-main .semi-input,
@@ -109,25 +146,21 @@
   color: rgba(55, 65, 81, 0.42) !important;
 }
 
-.semi-select-option-list,
-.semi-select-dropdown,
 .semi-dropdown-menu,
 .semi-popover-content,
 .semi-tooltip-wrapper {
-  background: rgba(255, 255, 255, 0.96) !important;
+  background: rgba(255, 255, 255, 0.98) !important;
   color: #111111 !important;
-  border-color: rgba(255, 255, 255, 0.92) !important;
-  box-shadow: 0 20px 50px rgba(111, 123, 168, 0.14);
+  border-color: rgba(226, 232, 240, 0.96) !important;
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.12);
 }
 
-.semi-select-option,
 .semi-dropdown-item {
   color: rgba(17, 24, 39, 0.84) !important;
 }
 
-.semi-select-option:hover,
 .semi-dropdown-item:hover {
-  background: rgba(99, 102, 241, 0.08) !important;
+  background: rgba(241, 245, 249, 0.98) !important;
 }
 
 /* -------------------------------------------------------------------------- */

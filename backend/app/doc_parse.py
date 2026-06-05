@@ -51,12 +51,61 @@ def _read_text_file(path: Path) -> str:
     return raw.decode("utf-8", errors="ignore")
 
 
+_W_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+
+
+def _docx_table_lines(doc) -> list[str]:
+    """表格内文字（许多方案材料正文写在表里，仅读 paragraphs 会得到空串）。"""
+    out: list[str] = []
+    try:
+        for table in doc.tables:
+            for row in table.rows:
+                cells: list[str] = []
+                for cell in row.cells:
+                    cell_text = "\n".join(
+                        (p.text or "").strip() for p in cell.paragraphs if (p.text or "").strip()
+                    ).strip()
+                    if cell_text:
+                        cells.append(cell_text)
+                if cells:
+                    out.append(" | ".join(cells))
+    except Exception:
+        pass
+    return out
+
+
+def _read_docx_wt_fallback(path: Path) -> str:
+    """从 word/document.xml 抽取所有 w:t，覆盖文本框等 python-docx 段落 API 漏掉的情况。"""
+    import zipfile
+    import xml.etree.ElementTree as ET
+
+    try:
+        with zipfile.ZipFile(path) as zf:
+            raw = zf.read("word/document.xml")
+    except Exception:
+        return ""
+    try:
+        root = ET.fromstring(raw)
+    except Exception:
+        return ""
+    parts: list[str] = []
+    for el in root.iter(_W_NS + "t"):
+        if el.text:
+            parts.append(el.text)
+        if el.tail:
+            parts.append(el.tail)
+    return " ".join(parts).strip()
+
+
 def _read_docx_file(path: Path) -> str:
     try:
         from docx import Document
     except ImportError:
         return ""
-    doc = Document(str(path))
+    try:
+        doc = Document(str(path))
+    except Exception:
+        return ""
     lines: list[str] = []
     for p in doc.paragraphs:
         text = p.text.strip()
@@ -75,7 +124,16 @@ def _read_docx_file(path: Path) -> str:
             lines.append("")
         else:
             lines.append(text)
-    return "\n".join(lines)
+    table_lines = _docx_table_lines(doc)
+    if table_lines:
+        if lines and lines[-1] != "":
+            lines.append("")
+        lines.append("【表格内容】")
+        lines.extend(table_lines)
+    merged = "\n".join(lines).strip()
+    if merged:
+        return merged
+    return _read_docx_wt_fallback(path)
 
 
 def _read_pdf_file(path: Path) -> tuple[str, int | None, list[str] | None]:

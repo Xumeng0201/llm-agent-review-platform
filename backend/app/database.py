@@ -89,6 +89,18 @@ def migrate_sqlite_schema() -> None:
                     text("ALTER TABLE review_tasks ADD COLUMN last_review_run_id INTEGER")
                 )
 
+    if "users" in tables:
+        ucols = {c["name"] for c in insp.get_columns("users")}
+        if "avatar_path" not in ucols:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE users ADD COLUMN avatar_path VARCHAR(512)"))
+        if "updated_at" not in ucols:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE users ADD COLUMN updated_at DATETIME"))
+        if "updated_by_user_id" not in ucols:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE users ADD COLUMN updated_by_user_id INTEGER"))
+
     if "llm_agents" in tables:
         acols = {c["name"] for c in insp.get_columns("llm_agents")}
         if "user_id" not in acols:
@@ -97,6 +109,9 @@ def migrate_sqlite_schema() -> None:
         if "system_prompt" not in acols:
             with engine.begin() as conn:
                 conn.execute(text("ALTER TABLE llm_agents ADD COLUMN system_prompt TEXT"))
+        if "updated_at" not in acols:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE llm_agents ADD COLUMN updated_at DATETIME"))
 
     if "review_tasks" in tables:
         rcols = {c["name"] for c in insp.get_columns("review_tasks")}
@@ -117,3 +132,71 @@ def migrate_sqlite_schema() -> None:
                 conn.execute(
                     text("ALTER TABLE review_tasks ADD COLUMN framework_version_id INTEGER")
                 )
+        if "project_key" not in rcols:
+            with engine.begin() as conn:
+                conn.execute(
+                    text("ALTER TABLE review_tasks ADD COLUMN project_key VARCHAR(128)")
+                )
+        if "version" not in rcols:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE review_tasks ADD COLUMN version VARCHAR(64)"))
+        if "updated_at" not in rcols:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE review_tasks ADD COLUMN updated_at DATETIME"))
+        if "updated_by_user_id" not in rcols:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE review_tasks ADD COLUMN updated_by_user_id INTEGER"))
+
+    if "review_projects" in tables:
+        pcols = {c["name"] for c in insp.get_columns("review_projects")}
+        if "updated_at" not in pcols:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE review_projects ADD COLUMN updated_at DATETIME"))
+
+    if "review_tasks" in tables:
+        from .project_identity import parse_project_identity
+        from .models import ReviewTask
+
+        from sqlalchemy import or_
+
+        session = SessionLocal()
+        try:
+            rows = (
+                session.query(ReviewTask)
+                .filter(or_(ReviewTask.project_key.is_(None), ReviewTask.project_key == ""))
+                .all()
+            )
+            changed = False
+            for task in rows:
+                if not (task.name or "").strip():
+                    continue
+                key, ver = parse_project_identity(task.name)
+                task.project_key = key
+                task.version = ver
+                changed = True
+            if changed:
+                session.commit()
+        finally:
+            session.close()
+
+    if "project_memory_profiles" not in tables:
+        from .models import ProjectMemoryProfile  # noqa: F401
+
+        Base.metadata.create_all(bind=engine, tables=[ProjectMemoryProfile.__table__])
+    elif "project_memory_profiles" in tables:
+        pcols = {c["name"] for c in insp.get_columns("project_memory_profiles")}
+        if "overview_text" not in pcols:
+            with engine.begin() as conn:
+                conn.execute(
+                    text("ALTER TABLE project_memory_profiles ADD COLUMN overview_text TEXT")
+                )
+        if "core_functions_json" not in pcols:
+            with engine.begin() as conn:
+                conn.execute(
+                    text("ALTER TABLE project_memory_profiles ADD COLUMN core_functions_json TEXT")
+                )
+
+    # 已废弃：分项 0～10 打分表，问题审查流程不再使用
+    if "indicator_scores" in tables:
+        with engine.begin() as conn:
+            conn.execute(text("DROP TABLE IF EXISTS indicator_scores"))

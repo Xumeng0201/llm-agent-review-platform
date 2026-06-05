@@ -2,20 +2,33 @@ import { Component, Suspense, lazy } from "react";
 import { Navigate, Route, Routes, useLocation, useParams } from "react-router-dom";
 import { useAuth } from "./auth";
 import Layout from "./components/Layout";
+import MethodsAgentFormPage from "./pages/MethodsAgentFormPage";
+import MethodsPage from "./pages/MethodsPage";
 
 const HomePage = lazy(() => import("./pages/HomePage"));
 const LoginPage = lazy(() => import("./pages/LoginPage"));
-const MethodsPage = lazy(() => import("./pages/MethodsPage"));
 const TaskHome = lazy(() => import("./pages/TaskHome"));
 const TaskNew = lazy(() => import("./pages/TaskNew"));
 const TaskDetail = lazy(() => import("./pages/TaskDetail"));
 const UsersPage = lazy(() => import("./pages/UsersPage"));
+const UserFormPage = lazy(() => import("./pages/UserFormPage"));
 const ReviewCriteriaPage = lazy(() => import("./pages/ReviewCriteriaPage"));
+const ProfilePage = lazy(() => import("./pages/ProfilePage"));
+const MemoryComparePage = lazy(() => import("./pages/MemoryComparePage"));
 
 /** `/tasks/:id` → 第一步（上传文件） */
 function TaskDetailDefaultStep() {
   const { id } = useParams();
   return <Navigate to={`/tasks/${id}/materials`} replace />;
+}
+
+function ProtectedShell() {
+  const { user } = useAuth();
+  const location = useLocation();
+  if (!user) {
+    return <Navigate to="/login" replace state={{ from: location.pathname }} />;
+  }
+  return <Layout />;
 }
 
 export default function App() {
@@ -33,48 +46,31 @@ export default function App() {
             path="/login"
             element={user ? <Navigate to="/" replace /> : <LoginPage />}
           />
-          <Route
-            path="*"
-            element={
-              <RequireAuth user={user}>
-                <Layout>
-                  <Routes>
-                    <Route path="/" element={<HomePage />} />
-                    <Route path="/tasks/pre-review" element={<TaskHome phase="pre_review" />} />
-                    <Route path="/tasks/implementation" element={<TaskHome phase="implementation" />} />
-                    <Route path="/tasks/pre-review/new" element={<TaskNew phase="pre_review" />} />
-                    <Route path="/tasks/implementation/new" element={<TaskNew phase="implementation" />} />
-                    <Route path="/review-criteria" element={<ReviewCriteriaPage />} />
-                    <Route path="/tasks" element={<Navigate to="/tasks/implementation" replace />} />
-                    <Route path="/tasks/new" element={<Navigate to="/tasks/implementation/new" replace />} />
-                    <Route path="/methods" element={<MethodsPage />} />
-                    <Route path="/users" element={<UsersPage />} />
-                    <Route path="/tasks/:id" element={<TaskDetailDefaultStep />} />
-                    <Route path="/tasks/:id/:step" element={<TaskDetail />} />
-                    <Route path="*" element={<Navigate to="/" replace />} />
-                  </Routes>
-                </Layout>
-              </RequireAuth>
-            }
-          />
+          <Route element={<ProtectedShell />}>
+            <Route path="/" element={<HomePage />} />
+            <Route path="/tasks/pre-review" element={<TaskHome phase="pre_review" />} />
+            <Route path="/tasks/implementation" element={<TaskHome phase="implementation" />} />
+            <Route path="/tasks/pre-review/new" element={<TaskNew phase="pre_review" />} />
+            <Route path="/tasks/implementation/new" element={<TaskNew phase="implementation" />} />
+            <Route path="/review-criteria" element={<ReviewCriteriaPage />} />
+            <Route path="/memory" element={<MemoryComparePage />} />
+            <Route path="/profile" element={<ProfilePage />} />
+            <Route path="/tasks" element={<Navigate to="/tasks/implementation" replace />} />
+            <Route path="/tasks/new" element={<Navigate to="/tasks/implementation/new" replace />} />
+            <Route path="/methods/new" element={<MethodsAgentFormPage />} />
+            <Route path="/methods/:id/edit" element={<MethodsAgentFormPage />} />
+            <Route path="/methods" element={<MethodsPage />} />
+            <Route path="/users/new" element={<UserFormPage />} />
+            <Route path="/users/:id/edit" element={<UserFormPage />} />
+            <Route path="/users" element={<UsersPage />} />
+            <Route path="/tasks/:id" element={<TaskDetailDefaultStep />} />
+            <Route path="/tasks/:id/:step" element={<TaskDetail />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Route>
         </Routes>
       </Suspense>
     </RouteErrorBoundary>
   );
-}
-
-function RequireAuth({
-  user,
-  children,
-}: {
-  user: ReturnType<typeof useAuth>["user"];
-  children: React.ReactNode;
-}) {
-  const location = useLocation();
-  if (!user) {
-    return <Navigate to="/login" replace state={{ from: location.pathname }} />;
-  }
-  return <>{children}</>;
 }
 
 function RouteLoadingShell() {

@@ -1,17 +1,16 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import {
-  IconArrowRight,
-} from "@douyinfe/semi-icons";
+import { IconArrowRight, IconListView } from "@douyinfe/semi-icons";
 import { Button, Card, Space, Typography } from "@douyinfe/semi-ui";
-import { getMonthlyCostSummary, listTasks } from "../api";
-import type { MonthlyCostSummary, ReviewTask } from "../types";
+import { getMonthlyCostSummary, getReviewTaskMetrics } from "../api";
+import type { MonthlyCostSummary } from "../types";
+import { pageShellList, secondaryPillButton, techPrimaryButton } from "../theme/pageChrome";
 
 const { Text, Title } = Typography;
 
 export default function HomePage() {
   const nav = useNavigate();
-  const [items, setItems] = useState<ReviewTask[]>([]);
+  const [taskMetrics, setTaskMetrics] = useState({ total: 0, in_progress: 0, completed: 0 });
   const [monthlyCost, setMonthlyCost] = useState<MonthlyCostSummary | null>(null);
 
   function formatMoney(value: number | null | undefined, currency: "USD" | "CNY") {
@@ -26,76 +25,69 @@ export default function HomePage() {
 
   useEffect(() => {
     void Promise.all([
-      listTasks().catch(() => []),
+      getReviewTaskMetrics().catch(() => ({ total: 0, in_progress: 0, completed: 0 })),
       getMonthlyCostSummary().catch(() => null),
-    ]).then(([tasks, monthly]) => {
-      setItems(tasks);
+    ]).then(([metrics, monthly]) => {
+      setTaskMetrics(metrics);
       setMonthlyCost(monthly);
     });
   }, []);
 
-  const completed = items.filter((x) => x.review_status === "completed").length;
-  const running = items.filter((x) => x.review_status === "in_progress").length;
-
   return (
-    <Card
-      bordered={false}
-      className="tech-enter tech-enter-1"
-      style={{
-        borderRadius: 28,
-        border: "1px solid rgba(255, 255, 255, 0.9)",
-        background: "linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(247, 248, 255, 0.88))",
-        boxShadow: "0 24px 60px rgba(111, 123, 168, 0.14)",
-      }}
-      bodyStyle={{ padding: "24px 24px 26px" }}
-    >
-        <Title heading={2} style={{ color: "#0f172a", margin: "0 0 18px" }}>
-          项目评审任务控制台
-        </Title>
+    <div className="dashboard-home">
+      <Card bordered={false} style={pageShellList} bodyStyle={{ padding: 30 }} className="dashboard-control-card">
+        <div className="dashboard-control-head">
+          <div>
+            <Title heading={2} style={{ margin: "0 0 10px", color: "#111827", letterSpacing: "-0.04em" }}>
+              项目评审任务控制台
+            </Title>
+            <Text style={{ color: "rgba(71, 85, 105, 0.92)", fontSize: 15 }}>
+              查看当前任务概况、评审进度与本月模型消耗，直接从这里开始新的审核工作。
+            </Text>
+          </div>
+        </div>
 
-        <div className="taskhome-stat-row">
-          <div className="taskhome-stat-card">
-            <Text className="taskhome-stat-label">任务总数</Text>
-            <div className="taskhome-stat-value">{items.length}</div>
+        <div className="dashboard-metrics-grid">
+          <div className="dashboard-metric-card">
+            <span className="dashboard-metric-label">任务总数</span>
+            <strong className="dashboard-metric-value">{taskMetrics.total}</strong>
           </div>
-          <div className="taskhome-stat-card">
-            <Text className="taskhome-stat-label">评审中</Text>
-            <div className="taskhome-stat-value">{running}</div>
+          <div className="dashboard-metric-card">
+            <span className="dashboard-metric-label">评审中</span>
+            <strong className="dashboard-metric-value">{taskMetrics.in_progress}</strong>
           </div>
-          <div className="taskhome-stat-card">
-            <Text className="taskhome-stat-label">已完成</Text>
-            <div className="taskhome-stat-value">{completed}</div>
+          <div className="dashboard-metric-card">
+            <span className="dashboard-metric-label">已完成</span>
+            <strong className="dashboard-metric-value">{taskMetrics.completed}</strong>
           </div>
-          <div className="taskhome-stat-card">
-            <Text className="taskhome-stat-label">本月预计成本</Text>
-            <div className="taskhome-stat-value" style={{ fontSize: 24 }}>
+          <div className="dashboard-metric-card dashboard-metric-card-accent">
+            <span className="dashboard-metric-label">本月预计成本</span>
+            <strong className="dashboard-metric-value">
               {formatMoney(monthlyCost?.estimated_cost_high_cny ?? 0, "CNY")}
-            </div>
+            </strong>
           </div>
         </div>
 
         {monthlyCost ? (
-          <div style={{ marginTop: 14, color: "rgba(71, 85, 105, 0.88)", fontSize: 14, textAlign: "center" }}>
-            {monthlyCost.month} 已创建 {monthlyCost.task_count} 个任务，累计约 {monthlyCost.total_llm_tokens} tokens，
-            费用区间 {formatMoney(monthlyCost.estimated_cost_low_cny, "CNY")} ~ {formatMoney(monthlyCost.estimated_cost_high_cny, "CNY")}。
+          <div className="dashboard-summary-strip">
+            <span>{monthlyCost.month}</span>
+            <span>已创建 {monthlyCost.task_count} 个任务</span>
+            <span>累计约 {monthlyCost.total_llm_tokens} tokens</span>
+            <span>
+              费用区间 {formatMoney(monthlyCost.estimated_cost_low_cny, "CNY")} ~{" "}
+              {formatMoney(monthlyCost.estimated_cost_high_cny, "CNY")}
+            </span>
           </div>
         ) : null}
 
-        <Space wrap spacing="medium" style={{ marginTop: 26, justifyContent: "center", width: "100%" }}>
+        <Space wrap spacing="medium" className="dashboard-action-row">
           <Button
             theme="solid"
             type="primary"
             size="large"
             icon={<IconArrowRight />}
             onClick={() => nav("/tasks/implementation/new")}
-            style={{
-              height: 48,
-              paddingInline: 22,
-              borderRadius: 999,
-              background: "linear-gradient(90deg, #20d2cc, #2c7ef8)",
-              border: "none",
-              boxShadow: "0 14px 28px rgba(35, 157, 226, 0.35)",
-            }}
+            style={{ ...techPrimaryButton, height: 50, paddingInline: 24 }}
           >
             新建实施方案审核
           </Button>
@@ -103,35 +95,14 @@ export default function HomePage() {
             size="large"
             theme="light"
             type="tertiary"
+            icon={<IconListView />}
             onClick={() => nav("/tasks/pre-review/new")}
-            style={{
-              height: 48,
-              paddingInline: 22,
-              borderRadius: 999,
-              color: "#0f172a",
-              background: "rgba(255, 255, 255, 0.82)",
-              border: "1px solid rgba(203, 213, 225, 0.92)",
-            }}
+            style={{ ...secondaryPillButton, height: 50, paddingInline: 24 }}
           >
             新建方案预审
           </Button>
-          <Button
-            size="large"
-            theme="light"
-            type="tertiary"
-            onClick={() => nav("/methods")}
-            style={{
-              height: 48,
-              paddingInline: 22,
-              borderRadius: 999,
-              color: "#0f172a",
-              background: "rgba(255, 255, 255, 0.82)",
-              border: "1px solid rgba(203, 213, 225, 0.92)",
-            }}
-          >
-            配置审查智能体
-          </Button>
         </Space>
-    </Card>
+      </Card>
+    </div>
   );
 }

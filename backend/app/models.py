@@ -11,13 +11,20 @@ class User(Base):
     id = Column(Integer, primary_key=True, index=True)
     username = Column(String(64), nullable=False, unique=True, index=True)
     display_name = Column(String(128), nullable=False)
+    avatar_path = Column(String(512), nullable=True)
     password_hash = Column(String(512), nullable=False)
     role = Column(String(32), nullable=False, default="user")
     is_active = Column(Boolean, nullable=False, default=True)
+    updated_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
     agents = relationship("LlmAgent", back_populates="user")
-    tasks = relationship("ReviewTask", back_populates="user")
+    tasks = relationship(
+        "ReviewTask",
+        back_populates="user",
+        foreign_keys="ReviewTask.user_id",
+    )
     review_projects = relationship("ReviewProject", back_populates="user")
     sessions = relationship("AuthSession", back_populates="user", cascade="all, delete-orphan")
 
@@ -48,6 +55,7 @@ class LlmAgent(Base):
     model = Column(String(128), nullable=False)
     system_prompt = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
     user = relationship("User", back_populates="agents")
 
@@ -63,6 +71,7 @@ class ReviewProject(Base):
     unit_name = Column(String(255), nullable=True)
     external_code = Column(String(128), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
     user = relationship("User", back_populates="review_projects")
     tasks = relationship("ReviewTask", back_populates="project")
@@ -84,7 +93,7 @@ class ReviewFrameworkVersion(Base):
 
 
 class ReviewTask(Base):
-    """评审任务：任务名称 + 方案材料 + 分项打分 + 报告"""
+    """评审任务：任务名称 + 方案材料 + 问题审查与意见书"""
 
     __tablename__ = "review_tasks"
 
@@ -96,11 +105,14 @@ class ReviewTask(Base):
         Integer, ForeignKey("review_framework_versions.id"), nullable=True, index=True
     )
     name = Column(String(255), nullable=False)
+    project_key = Column(String(128), nullable=True, index=True)
+    version = Column(String(64), nullable=True)
     proposal_body = Column(Text, nullable=True)
     summary_highlights = Column(Text, nullable=True)
     summary_issues = Column(Text, nullable=True)
     review_summary = Column(Text, nullable=True)
     llm_agent_id = Column(Integer, ForeignKey("llm_agents.id"), nullable=True)
+    updated_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     analysis_status = Column(String(32), nullable=False, default="draft")
     doc_total_chars = Column(Integer, nullable=True)
     doc_total_chunks = Column(Integer, nullable=True)
@@ -110,13 +122,14 @@ class ReviewTask(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
-    user = relationship("User", back_populates="tasks")
+    user = relationship(
+        "User",
+        back_populates="tasks",
+        foreign_keys=[user_id],
+    )
     project = relationship("ReviewProject", back_populates="tasks")
     framework_version = relationship("ReviewFrameworkVersion")
     llm_agent = relationship("LlmAgent")
-    scores = relationship(
-        "IndicatorScore", back_populates="task", cascade="all, delete-orphan"
-    )
     attachments = relationship(
         "Attachment", back_populates="task", cascade="all, delete-orphan"
     )
@@ -129,20 +142,40 @@ class ReviewTask(Base):
     review_issues = relationship(
         "ReviewIssue", back_populates="task", cascade="all, delete-orphan"
     )
+    memory_profile = relationship(
+        "ProjectMemoryProfile",
+        back_populates="task",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
 
 
-class IndicatorScore(Base):
-    """每项一级指标 0～10 分，十项合计 100 分。"""
+class ProjectMemoryProfile(Base):
+    """任务方案记忆画像：供全库跨项目检索与重复建设比对。"""
 
-    __tablename__ = "indicator_scores"
+    __tablename__ = "project_memory_profiles"
 
     id = Column(Integer, primary_key=True, index=True)
-    task_id = Column(Integer, ForeignKey("review_tasks.id"), nullable=False)
-    indicator_id = Column(Integer, nullable=False)
-    score = Column(Integer, nullable=True)
-    notes = Column(Text, nullable=True)
+    task_id = Column(Integer, ForeignKey("review_tasks.id"), nullable=False, unique=True, index=True)
+    project_key = Column(String(128), nullable=True, index=True)
+    version = Column(String(64), nullable=True)
+    phase = Column(String(32), nullable=True, index=True)
+    index_status = Column(String(32), nullable=False, default="pending")
+    index_error = Column(Text, nullable=True)
+    summary_text = Column(Text, nullable=True)
+    overview_text = Column(Text, nullable=True)
+    goals_json = Column(Text, nullable=True)
+    capabilities_json = Column(Text, nullable=True)
+    core_functions_json = Column(Text, nullable=True)
+    systems_json = Column(Text, nullable=True)
+    keywords_json = Column(Text, nullable=True)
+    char_count = Column(Integer, nullable=True)
+    chunk_count = Column(Integer, nullable=True)
+    indexed_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
-    task = relationship("ReviewTask", back_populates="scores")
+    task = relationship("ReviewTask", back_populates="memory_profile")
 
 
 class Attachment(Base):

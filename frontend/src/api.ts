@@ -1,8 +1,5 @@
 import type {
   AppUser,
-  AiReportResult,
-  AiReviewRunResult,
-  AiSuggestResult,
   AnalysisStatusResult,
   Attachment,
   AuthResult,
@@ -10,12 +7,11 @@ import type {
   DocumentChunk,
   DocumentFile,
   Framework,
+  FrameworkCriteriaPreview,
   FrameworkCurrentResponse,
   FrameworkVersionInfo,
   LlmAgent,
   LlmProvider,
-  OverallReport,
-  IndicatorScoreRow,
   ReviewIssue,
   ReviewIssueListResult,
   ReviewPhase,
@@ -27,6 +23,14 @@ import type {
   TaskCostOverviewItem,
   CostCompareItem,
   MonthlyCostSummary,
+  Paginated,
+  ReviewTaskMetrics,
+  ReviewStatus,
+  MemoryCompareResult,
+  MemoryLibraryResult,
+  MemoryProfile,
+  MemoryReindexResult,
+  MemorySimilarListResult,
 } from "./types";
 
 const AUTH_TOKEN_KEY = "project-review-auth-token";
@@ -62,10 +66,27 @@ async function request(input: RequestInfo | URL, init: RequestInit = {}): Promis
   return res;
 }
 
+function formatApiErrorBody(status: number, text: string): string {
+  const raw = text?.trim() || "";
+  if (!raw) return resStatusText(status);
+  try {
+    const parsed = JSON.parse(raw) as { detail?: unknown };
+    if (typeof parsed.detail === "string") return parsed.detail;
+    if (parsed.detail != null) return JSON.stringify(parsed.detail);
+  } catch {
+    /* 非 JSON 则原样返回 */
+  }
+  return raw;
+}
+
+function resStatusText(status: number): string {
+  return status === 502 ? "服务暂时不可用" : `HTTP ${status}`;
+}
+
 async function parseJson<T>(res: Response): Promise<T> {
   if (!res.ok) {
     const text = await res.text();
-    throw new ApiError(res.status, text || res.statusText);
+    throw new ApiError(res.status, formatApiErrorBody(res.status, text));
   }
   return res.json() as Promise<T>;
 }
@@ -107,8 +128,41 @@ export async function getMe(): Promise<AppUser> {
   return parseJson(res);
 }
 
-export async function listUsers(): Promise<AppUser[]> {
-  const res = await request("/api/users");
+export async function updateMyProfile(body: { display_name: string }): Promise<AppUser> {
+  const res = await request("/api/auth/me", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return parseJson(res);
+}
+
+export async function uploadMyAvatar(file: File): Promise<AppUser> {
+  const form = new FormData();
+  form.append("file", file);
+  const res = await request("/api/auth/me/avatar", { method: "POST", body: form });
+  return parseJson(res);
+}
+
+export async function fetchMyAvatarObjectUrl(): Promise<string | null> {
+  const res = await request("/api/auth/me/avatar");
+  if (res.status === 404) return null;
+  if (!res.ok) throw new ApiError(res.status, await res.text());
+  const blob = await res.blob();
+  return URL.createObjectURL(blob);
+}
+
+export async function listUsers(params?: {
+  page?: number;
+  page_size?: number;
+  q?: string;
+}): Promise<Paginated<AppUser>> {
+  const qs = new URLSearchParams();
+  if (params?.page != null) qs.set("page", String(params.page));
+  if (params?.page_size != null) qs.set("page_size", String(params.page_size));
+  if (params?.q?.trim()) qs.set("q", params.q.trim());
+  const suffix = qs.toString() ? `?${qs.toString()}` : "";
+  const res = await request(`/api/users${suffix}`);
   return parseJson(res);
 }
 
@@ -126,19 +180,64 @@ export async function createUser(body: {
   return parseJson(res);
 }
 
-export async function fetchFramework(): Promise<Framework> {
-  const res = await request("/api/framework");
+export async function getUser(userId: number): Promise<AppUser> {
+  const res = await request(`/api/users/${userId}`);
   return parseJson(res);
 }
 
-export async function listTasks(phase?: ReviewPhase): Promise<ReviewTask[]> {
+export async function updateUser(
+  userId: number,
+  body: {
+    display_name?: string | null;
+    role?: "admin" | "user";
+    is_active?: boolean;
+    password?: string | null;
+  },
+): Promise<AppUser> {
+  const res = await request(`/api/users/${userId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return parseJson(res);
+}
+
+export async function fetchFramework(phase?: ReviewPhase): Promise<Framework> {
   const q = phase ? `?phase=${encodeURIComponent(phase)}` : "";
-  const res = await request(`/api/review-tasks${q}`);
+  const res = await request(`/api/framework${q}`);
+  return parseJson(res);
+}
+
+export async function listTasks(params?: {
+  phase?: ReviewPhase;
+  page?: number;
+  page_size?: number;
+  q?: string;
+  review_status?: ReviewStatus | "all";
+}): Promise<Paginated<ReviewTask>> {
+  const qs = new URLSearchParams();
+  if (params?.phase) qs.set("phase", params.phase);
+  if (params?.page != null) qs.set("page", String(params.page));
+  if (params?.page_size != null) qs.set("page_size", String(params.page_size));
+  if (params?.q?.trim()) qs.set("q", params.q.trim());
+  if (params?.review_status && params.review_status !== "all") {
+    qs.set("review_status", params.review_status);
+  }
+  const suffix = qs.toString() ? `?${qs.toString()}` : "";
+  const res = await request(`/api/review-tasks${suffix}`);
+  return parseJson(res);
+}
+
+export async function getReviewTaskMetrics(phase?: ReviewPhase): Promise<ReviewTaskMetrics> {
+  const q = phase ? `?phase=${encodeURIComponent(phase)}` : "";
+  const res = await request(`/api/review-tasks/metrics${q}`);
   return parseJson(res);
 }
 
 export async function createTask(body: {
   name: string;
+  project_key?: string | null;
+  version?: string | null;
   llm_agent_id?: number | null;
   phase?: ReviewPhase;
   project_id?: number | null;
@@ -174,6 +273,11 @@ export async function getFrameworkCurrent(phase: ReviewPhase): Promise<Framework
   return parseJson(res);
 }
 
+export async function getFrameworkCriteriaPreview(phase: ReviewPhase): Promise<FrameworkCriteriaPreview> {
+  const res = await request(`/api/review-framework/${phase}/preview-text`);
+  return parseJson(res);
+}
+
 export async function uploadReviewFrameworkDocx(
   phase: ReviewPhase,
   file: File
@@ -204,6 +308,8 @@ export async function updateTask(
   id: number,
   patch: Partial<{
     name: string;
+    project_key: string | null;
+    version: string | null;
     proposal_body: string | null;
     summary_highlights: string | null;
     summary_issues: string | null;
@@ -222,28 +328,6 @@ export async function updateTask(
 export async function deleteTask(id: number): Promise<void> {
   const res = await request(`/api/review-tasks/${id}`, { method: "DELETE" });
   if (!res.ok) throw new Error(await res.text());
-}
-
-export async function listScores(taskId: number): Promise<IndicatorScoreRow[]> {
-  const res = await request(`/api/review-tasks/${taskId}/scores`);
-  return parseJson(res);
-}
-
-export async function saveScore(
-  taskId: number,
-  body: { indicator_id: number; score: number; notes?: string }
-): Promise<IndicatorScoreRow> {
-  const res = await request(`/api/review-tasks/${taskId}/scores`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  return parseJson(res);
-}
-
-export async function fetchReport(taskId: number): Promise<OverallReport> {
-  const res = await request(`/api/review-tasks/${taskId}/report`);
-  return parseJson(res);
 }
 
 export async function getAnalysisStatus(taskId: number): Promise<AnalysisStatusResult> {
@@ -273,8 +357,12 @@ export async function getParserCapabilities(): Promise<ParserCapability> {
   return parseJson(res);
 }
 
-export async function getTaskCostOverview(): Promise<TaskCostOverviewItem[]> {
-  const res = await request(`/api/review-costs/task-overview`);
+/** 不传 taskIds 时后端返回当前用户全部任务（开销大）；列表页请传入当前页 id。 */
+export async function getTaskCostOverview(taskIds?: number[]): Promise<TaskCostOverviewItem[]> {
+  const qs = new URLSearchParams();
+  if (taskIds && taskIds.length > 0) qs.set("task_ids", taskIds.join(","));
+  const suffix = qs.toString() ? `?${qs.toString()}` : "";
+  const res = await request(`/api/review-costs/task-overview${suffix}`);
   return parseJson(res);
 }
 
@@ -441,33 +529,6 @@ export async function downloadIssueReportHtml(
   );
 }
 
-/**
- * 从后端拉取 .docx，通过浏览器保存到本机（比直接打开 URL 更易触发「下载」）。
- */
-export async function downloadReviewReportWord(
-  taskId: number,
-  taskName: string
-): Promise<void> {
-  const res = await request(`/api/review-tasks/${taskId}/report/word`);
-  if (!res.ok) {
-    const t = await res.text();
-    throw new Error(t || `下载失败（HTTP ${res.status}）`);
-  }
-  const blob = await res.blob();
-  const url = URL.createObjectURL(blob);
-  try {
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `评审报告-${safeReportBasename(taskName)}.docx`;
-    a.rel = "noopener";
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-  } finally {
-    URL.revokeObjectURL(url);
-  }
-}
-
 export async function downloadIssueReportWord(
   taskId: number,
   taskName: string
@@ -492,8 +553,24 @@ export async function downloadIssueReportWord(
   }
 }
 
-export async function listAgents(): Promise<LlmAgent[]> {
-  const res = await request("/api/llm-agents");
+export async function listAgents(params?: {
+  page?: number;
+  page_size?: number;
+  q?: string;
+  provider?: LlmProvider | "all";
+}): Promise<Paginated<LlmAgent>> {
+  const qs = new URLSearchParams();
+  if (params?.page != null) qs.set("page", String(params.page));
+  if (params?.page_size != null) qs.set("page_size", String(params.page_size));
+  if (params?.q?.trim()) qs.set("q", params.q.trim());
+  if (params?.provider && params.provider !== "all") qs.set("provider", params.provider);
+  const suffix = qs.toString() ? `?${qs.toString()}` : "";
+  const res = await request(`/api/llm-agents${suffix}`);
+  return parseJson(res);
+}
+
+export async function getAgent(id: number): Promise<LlmAgent> {
+  const res = await request(`/api/llm-agents/${id}`);
   return parseJson(res);
 }
 
@@ -537,55 +614,54 @@ export async function deleteAgent(id: number): Promise<void> {
   if (!res.ok) throw new Error(await res.text());
 }
 
-export async function aiSuggestScores(
+export async function fetchMemoryLibrary(params?: {
+  phase?: ReviewPhase;
+  q?: string;
+  limit?: number;
+}): Promise<MemoryLibraryResult> {
+  const qs = new URLSearchParams();
+  if (params?.phase) qs.set("phase", params.phase);
+  if (params?.q?.trim()) qs.set("q", params.q.trim());
+  if (params?.limit != null) qs.set("limit", String(params.limit));
+  const suffix = qs.toString() ? `?${qs.toString()}` : "";
+  const res = await request(`/api/memory/library${suffix}`);
+  return parseJson(res);
+}
+
+export async function getMemoryProfile(taskId: number): Promise<MemoryProfile> {
+  const res = await request(`/api/memory/tasks/${taskId}/profile`);
+  return parseJson(res);
+}
+
+export async function indexMemoryProfile(taskId: number): Promise<MemoryProfile> {
+  const res = await request(`/api/memory/tasks/${taskId}/index`, { method: "POST" });
+  return parseJson(res);
+}
+
+export async function fetchMemorySimilar(
   taskId: number,
-  body: { agent_id?: number | null }
-): Promise<AiSuggestResult> {
-  const res = await request(`/api/review-tasks/${taskId}/ai-suggest`, {
+  limit = 10
+): Promise<MemorySimilarListResult> {
+  const res = await request(`/api/memory/tasks/${taskId}/similar?limit=${limit}`);
+  return parseJson(res);
+}
+
+export async function compareMemoryTasks(
+  sourceTaskId: number,
+  targetTaskId: number
+): Promise<MemoryCompareResult> {
+  const res = await request("/api/memory/compare", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
+    body: JSON.stringify({
+      source_task_id: sourceTaskId,
+      target_task_id: targetTaskId,
+    }),
   });
   return parseJson(res);
 }
 
-export async function aiGenerateReport(
-  taskId: number,
-  body: { agent_id?: number | null }
-): Promise<AiReportResult> {
-  const res = await request(`/api/review-tasks/${taskId}/ai-report`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  return parseJson(res);
-}
-
-export async function aiRunReview(
-  taskId: number,
-  body: { agent_id?: number | null }
-): Promise<AiReviewRunResult> {
-  const res = await request(`/api/review-tasks/${taskId}/ai-review`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  return parseJson(res);
-}
-
-export async function aiApplyReport(
-  taskId: number,
-  body: {
-    items: { indicator_id: number; score: number; notes: string; opinion: string }[];
-    conclusion: string;
-    highlights: string;
-    issues: string;
-  }
-): Promise<ReviewTask> {
-  const res = await request(`/api/review-tasks/${taskId}/ai-report/apply`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+export async function reindexMemoryLibrary(): Promise<MemoryReindexResult> {
+  const res = await request("/api/memory/reindex", { method: "POST" });
   return parseJson(res);
 }

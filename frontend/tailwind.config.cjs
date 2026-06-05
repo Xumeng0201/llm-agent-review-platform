@@ -36,13 +36,7 @@ module.exports = {
         },
       },
       fontFamily: {
-        sans: [
-          '"Noto Sans SC"',
-          '"DM Sans"',
-          "ui-sans-serif",
-          "system-ui",
-          "sans-serif",
-        ],
+        sans: ['"Microsoft YaHei"', '"微软雅黑"', '"PingFang SC"', '"Hiragino Sans GB"', "sans-serif"],
       },
       borderRadius: {
         lg: "var(--radius)",

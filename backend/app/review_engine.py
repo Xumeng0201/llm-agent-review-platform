@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -256,10 +257,11 @@ def build_issue_review_system_prompt(
 {chr(10).join('- ' + x for x in dimension.get('minor_rules', []))}
 
 输出要求：
-1. 只能输出 JSON。
-2. 不能输出 score、评分、总分、通过/不通过判断。
-3. 每条问题必须绑定 evidence_ids。
-4. 如果证据不足，请在 description 或 reason 中明确写出“未见材料说明”。
+1. 只能输出 JSON，不要使用 markdown 代码块，不要输出任何 JSON 以外的文字。
+2. JSON 中必须使用英文双引号与英文逗号，禁止在字段之间使用中文逗号「，」。
+3. 不能输出 score、评分、总分、通过/不通过判断。
+4. 每条问题必须绑定 evidence_ids。
+5. 如果证据不足，请在 description 或 reason 中明确写出“未见材料说明”。
 
 JSON 结构：
 {{
@@ -401,19 +403,124 @@ def _parse_json_list(raw: str | None) -> list[str]:
     return [str(item).strip() for item in value if str(item).strip()]
 
 
-def _extract_json_object(text: str) -> dict[str, Any]:
-    text = text.strip()
-    m = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
+def _repair_json_text(text: str) -> str:
+    """修复模型输出里常见的非标准 JSON（不改变字符串内部内容的尽力修复）。"""
+    text = text.replace("\ufeff", "").replace("\u201c", '"').replace("\u201d", '"')
+    text = text.replace("\u2018", "'").replace("\u2019", "'")
+    # 结构性中文逗号（引号/括号后的 ，）→ 英文逗号
+    text = re.sub(r'([}\]"\d])\s*，\s*(?=["{\[])', r"\1,", text)
+    text = re.sub(r",(\s*[}\]])", r"\1", text)
+    return text
+
+
+def _try_close_truncated_json(text: str) -> str:
+    """输出被 max_tokens 截断时，尝试补全未闭合的引号与括号。"""
+    stack: list[str] = []
+    in_string = False
+    escape = False
+    for ch in text:
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            stack.append("}")
+        elif ch == "[":
+            stack.append("]")
+        elif ch in "}]" and stack and stack[-1] == ch:
+            stack.pop()
+    suffix = '"' if in_string else ""
+    suffix += "".join(reversed(stack))
+    return text + suffix if suffix else text
+
+
+def _json_candidates_from_llm_text(text: str) -> list[str]:
+    text = (text or "").strip()
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def add(s: str) -> None:
+        s = s.strip()
+        if s and s not in seen:
+            seen.add(s)
+            out.append(s)
+
+    m = re.search(r"```(?:json)?\s*([\s\S]*?)```", text, re.IGNORECASE)
     if m:
-        text = m.group(1).strip()
+        add(m.group(1))
     start = text.find("{")
     end = text.rfind("}")
     if start >= 0 and end > start:
-        text = text[start : end + 1]
-    return json.loads(text)
+        add(text[start : end + 1])
+    if text.startswith("{"):
+        add(text)
+    return out
 
 
-def build_issue_discovery_user_prompt(task_name: str, dimension: dict, retrieved_chunks: list[RetrievedChunk]) -> str:
+def _extract_json_object(text: str) -> dict[str, Any]:
+    last_err: json.JSONDecodeError | None = None
+    for raw in _json_candidates_from_llm_text(text):
+        for variant in (raw, _repair_json_text(raw), _try_close_truncated_json(_repair_json_text(raw))):
+            try:
+                obj = json.loads(variant)
+                if isinstance(obj, dict):
+                    return obj
+            except json.JSONDecodeError as e:
+                last_err = e
+    if last_err is not None:
+        raise last_err
+    raise json.JSONDecodeError("未找到 JSON 对象", text or "", 0)
+
+
+def _parse_issue_discovery_response(
+    content: str,
+    *,
+    agent,
+    retry_messages: list[dict[str, str]] | None = None,
+) -> dict[str, Any]:
+    try:
+        return _extract_json_object(content)
+    except json.JSONDecodeError as first_err:
+        if agent and retry_messages:
+            try:
+                repaired = chat_completion(
+                    agent,
+                    retry_messages
+                    + [
+                        {"role": "assistant", "content": content[:12000]},
+                        {
+                            "role": "user",
+                            "content": (
+                                "你上一条回复不是合法 JSON，无法被程序解析。"
+                                "请仅重新输出完整 JSON，不要 markdown 代码块、不要任何解释文字。"
+                                "结构与之前要求的 issues 数组完全一致。"
+                            ),
+                        },
+                    ],
+                    max_tokens=4096,
+                    temperature=0.0,
+                )
+                return _extract_json_object(repaired)
+            except (json.JSONDecodeError, Exception):
+                pass
+        raise ValueError(
+            "大模型返回的内容无法解析为 JSON（可能含多余说明、逗号错误或输出被截断）。"
+            "请重试「问题审查」；若仍失败，可换用更稳定的模型或缩短材料后重试。"
+        ) from first_err
+
+
+def build_issue_discovery_user_prompt(
+    task_name: str,
+    dimension: dict,
+    retrieved_chunks: list[RetrievedChunk],
+    memory_context: str | None = None,
+) -> str:
     blocks: list[str] = []
     for idx, chunk in enumerate(retrieved_chunks, start=1):
         loc = [f"文件：{chunk.file_name}"]
@@ -430,9 +537,10 @@ def build_issue_discovery_user_prompt(task_name: str, dimension: dict, retrieved
         if chunk.keywords:
             extra.append(f"关键词：{'、'.join(chunk.keywords[:8])}")
         blocks.append(f"[证据 {idx}] {' | '.join(loc)}\n" + "\n".join(extra + [chunk.content[:1800]]))
+    memory_block = f"\n\n{memory_context}\n\n" if memory_context else ""
     return f"""任务名称：{task_name}
 审查维度：{dimension['title']}
-
+{memory_block}
 以下是候选证据，请基于这些证据发现问题：
 
 {chr(10).join(chr(10) + x for x in blocks)}"""
@@ -444,24 +552,31 @@ def discover_issues_for_dimension(
     dimension: dict,
     retrieved_chunks: list[RetrievedChunk],
     criteria_supplement: str | None = None,
+    memory_context: str | None = None,
 ) -> list[DraftIssue]:
     if not retrieved_chunks:
         return []
+    messages = [
+        {
+            "role": "system",
+            "content": build_issue_review_system_prompt(
+                agent, dimension, criteria_supplement=criteria_supplement
+            ),
+        },
+        {
+            "role": "user",
+            "content": build_issue_discovery_user_prompt(
+                task_name, dimension, retrieved_chunks, memory_context=memory_context
+            ),
+        },
+    ]
     content = chat_completion(
         agent,
-        [
-            {
-                "role": "system",
-                "content": build_issue_review_system_prompt(
-                    agent, dimension, criteria_supplement=criteria_supplement
-                ),
-            },
-            {"role": "user", "content": build_issue_discovery_user_prompt(task_name, dimension, retrieved_chunks)},
-        ],
+        messages,
         max_tokens=4096,
         temperature=0.1,
     )
-    obj = _extract_json_object(content)
+    obj = _parse_issue_discovery_response(content, agent=agent, retry_messages=messages)
     raw_items = obj.get("issues", [])
     issues: list[DraftIssue] = []
     for item in raw_items:
@@ -670,14 +785,27 @@ def run_issue_review_for_task(
 
     criteria_supplement = _criteria_supplement_for_task(db, task)
 
+    from .cross_project_memory import DUPLICATE_DIMENSION_KEY, format_similar_projects_for_review
+
     draft_issues: list[DraftIssue] = []
-    for dim in dimensions:
+    for dim_index, dim in enumerate(dimensions):
+        if dim_index > 0:
+            # 维度间留足间隔，降低 DeepSeek 短时限流（403）概率
+            time.sleep(2.5)
         retrieved = retrieve_chunks_for_dimension(db, task.id, dim)
         if not retrieved:
             continue
+        memory_ctx = None
+        if dim.get("key") == DUPLICATE_DIMENSION_KEY:
+            memory_ctx = format_similar_projects_for_review(db, task)
         draft_issues.extend(
             discover_issues_for_dimension(
-                agent, task.name, dim, retrieved, criteria_supplement=criteria_supplement
+                agent,
+                task.name,
+                dim,
+                retrieved,
+                criteria_supplement=criteria_supplement,
+                memory_context=memory_ctx,
             )
         )
 

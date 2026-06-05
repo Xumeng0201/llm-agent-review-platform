@@ -1,10 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   IconDeleteStroked,
-  IconDownload,
-  IconFile,
-  IconSearch,
+  IconDownloadStroked,
+  IconSearchStroked,
 } from "@douyinfe/semi-icons";
 import {
   Button,
@@ -20,10 +19,25 @@ import {
   Toast,
   Typography,
 } from "@douyinfe/semi-ui";
+import { TableActionButton, TableActionGroup, TaskDetailIcon } from "../components/TableActionButton";
 import { deleteTask, downloadIssueReportWord, getTaskCostOverview, listTasks } from "../api";
+import { pageShellList, techPrimaryButton, toolbarSearchInput } from "../theme/pageChrome";
 import type { ReviewPhase, ReviewTask, TaskCostOverviewItem } from "../types";
+import { parseProjectIdentity } from "../utils/projectIdentity";
 
 const { Title, Text } = Typography;
+
+function displayProjectKey(record: ReviewTask): string {
+  const stored = record.project_key?.trim();
+  if (stored) return stored;
+  return parseProjectIdentity(record.name).project_key?.trim() || "—";
+}
+
+function displayVersion(record: ReviewTask): string {
+  const stored = record.version?.trim();
+  if (stored) return stored;
+  return parseProjectIdentity(record.name).version?.trim() || "—";
+}
 
 type StatusFilter = "all" | "in_progress" | "completed";
 
@@ -54,6 +68,7 @@ export default function TaskHome({ phase }: { phase: ReviewPhase }) {
   const newTaskPath = phase === "pre_review" ? "/tasks/pre-review/new" : "/tasks/implementation/new";
   const phaseTitle = phase === "pre_review" ? "方案预审" : "实施方案审核";
   const [items, setItems] = useState<ReviewTask[]>([]);
+  const [listTotal, setListTotal] = useState(0);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -62,58 +77,51 @@ export default function TaskHome({ phase }: { phase: ReviewPhase }) {
   const [pageSize, setPageSize] = useState(10);
   const [costMap, setCostMap] = useState<Record<number, TaskCostOverviewItem>>({});
 
-  function formatMoney(value: number | null | undefined, currency: "USD" | "CNY") {
-    if (value == null || Number.isNaN(value)) return "—";
-    return new Intl.NumberFormat("zh-CN", {
-      style: "currency",
-      currency,
-      minimumFractionDigits: value < 1 ? 4 : 2,
-      maximumFractionDigits: value < 1 ? 4 : 2,
-    }).format(value);
-  }
-
   const load = useCallback(async () => {
     setLoading(true);
     setErr(null);
     try {
-      const [tasks, costs] = await Promise.all([
-        listTasks(phase),
-        getTaskCostOverview().catch(() => []),
-      ]);
-      setItems(tasks);
-      setCostMap(Object.fromEntries(costs.map((item) => [item.task_id, item])));
+      const body = await listTasks({
+        phase,
+        page,
+        page_size: pageSize,
+        q: search.trim() || undefined,
+        review_status: statusFilter,
+      });
+      setListTotal(body.total);
+      setItems(body.items);
+      const ids = body.items.map((t) => t.id);
+      if (ids.length > 0) {
+        const costs = await getTaskCostOverview(ids).catch(() => []);
+        setCostMap(Object.fromEntries(costs.map((item) => [item.task_id, item])));
+      } else {
+        setCostMap({});
+      }
     } catch (e) {
       setErr(e instanceof Error ? e.message : "加载失败");
     } finally {
       setLoading(false);
     }
-  }, [phase]);
+  }, [phase, page, pageSize, search, statusFilter]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return items.filter((t) => {
-      if (q && !t.name.toLowerCase().includes(q)) return false;
-      if (statusFilter === "all") return true;
-      return t.review_status === statusFilter;
-    });
-  }, [items, search, statusFilter]);
+  useEffect(() => {
+    setPage(1);
+  }, [phase]);
 
   useEffect(() => {
     setPage(1);
   }, [search, statusFilter, pageSize]);
 
-  const total = filtered.length;
-  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const totalPages = Math.max(1, Math.ceil(listTotal / pageSize) || 1);
   const pageSafe = Math.min(page, totalPages);
-  const slice = filtered.slice((pageSafe - 1) * pageSize, pageSafe * pageSize);
 
   useEffect(() => {
-    setPage((p) => Math.min(p, totalPages));
-  }, [totalPages]);
+    if (page > totalPages) setPage(totalPages);
+  }, [page, totalPages]);
 
   async function onDelete(id: number, name: string) {
     if (!confirm(`确定删除评审任务「${name}」？相关附件与历史审查结果将一并删除。`)) return;
@@ -127,52 +135,103 @@ export default function TaskHome({ phase }: { phase: ReviewPhase }) {
 
   const columns = [
     {
+      title: "序号",
+      dataIndex: "row_no",
+      key: "row_no",
+      width: "5%",
+      align: "center" as const,
+    },
+    {
       title: "任务名称",
       dataIndex: "name",
+      width: "18%",
+      align: "left" as const,
       ellipsis: true,
       render: (text: string) => (
-        <Text strong style={{ color: "#0f172a" }}>
+        <Text strong ellipsis={{ showTooltip: true }} style={{ color: "#0f172a", maxWidth: "100%" }}>
           {text}
+        </Text>
+      ),
+    },
+    {
+      title: "项目名称",
+      dataIndex: "project_key",
+      width: "16%",
+      align: "left" as const,
+      ellipsis: true,
+      render: (_: string | null, record: ReviewTask) => (
+        <Text ellipsis={{ showTooltip: true }} style={{ color: "rgba(51, 65, 85, 0.92)", maxWidth: "100%" }}>
+          {displayProjectKey(record)}
+        </Text>
+      ),
+    },
+    {
+      title: "版本",
+      dataIndex: "version",
+      width: "6%",
+      align: "center" as const,
+      render: (_: string | null, record: ReviewTask) => (
+        <Text style={{ color: "rgba(51, 65, 85, 0.92)", fontSize: 12 }}>
+          {displayVersion(record)}
         </Text>
       ),
     },
     {
       title: "创建时间",
       dataIndex: "created_at",
-      width: 176,
+      width: "11%",
+      align: "center" as const,
       render: (iso: string | null) => (
-        <span style={{ fontFamily: "monospace", fontSize: 12, color: "rgba(51, 65, 85, 0.82)" }}>
+        <span
+          style={{
+            fontSize: 12,
+            color: "rgba(51, 65, 85, 0.82)",
+            whiteSpace: "nowrap",
+          }}
+        >
           {formatDateTime(iso)}
         </span>
       ),
     },
     {
+      title: "更新时间",
+      dataIndex: "updated_at",
+      width: "11%",
+      align: "center" as const,
+      render: (iso: string | null) => (
+        <span
+          style={{
+            fontSize: 12,
+            color: "rgba(51, 65, 85, 0.82)",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {formatDateTime(iso)}
+        </span>
+      ),
+    },
+    {
+      title: "更新人",
+      dataIndex: "username",
+      width: "7%",
+      align: "center" as const,
+      ellipsis: true,
+      render: (v: string) => (
+        <Text style={{ color: "rgba(51, 65, 85, 0.92)" }}>{v || "—"}</Text>
+      ),
+    },
+    {
       title: "状态",
       dataIndex: "review_status",
-      width: 120,
+      width: "8%",
+      align: "center" as const,
       render: (s: ReviewTask["review_status"]) =>
         s === "completed" ? (
-          <Tag
-            size="large"
-            shape="circle"
-            style={{
-              color: "#166534",
-              background: "rgba(220, 252, 231, 0.9)",
-              border: "1px solid rgba(134, 239, 172, 0.95)",
-            }}
-          >
+          <Tag className="task-status-tag task-status-tag--completed" shape="circle">
             已完成
           </Tag>
         ) : (
-          <Tag
-            size="large"
-            shape="circle"
-            style={{
-              color: "#1d4ed8",
-              background: "rgba(219, 234, 254, 0.92)",
-              border: "1px solid rgba(147, 197, 253, 0.95)",
-            }}
-          >
+          <Tag className="task-status-tag task-status-tag--progress" shape="circle">
             评审中
           </Tag>
         ),
@@ -180,46 +239,38 @@ export default function TaskHome({ phase }: { phase: ReviewPhase }) {
     {
       title: "预计成本",
       dataIndex: "id",
-      width: 180,
+      width: "9%",
+      align: "center" as const,
       render: (_: unknown, record: ReviewTask) => {
         const cost = costMap[record.id];
-        if (!cost || cost.estimated_cost_low_cny == null || cost.estimated_cost_high_cny == null) {
+        if (!cost || cost.total_llm_tokens <= 0) {
           return <Text style={{ color: "rgba(100, 116, 139, 0.84)" }}>—</Text>;
         }
         return (
-          <div>
-            <Text strong style={{ color: "#0f172a" }}>
-              {formatMoney(cost.estimated_cost_low_cny, "CNY")} ~ {formatMoney(cost.estimated_cost_high_cny, "CNY")}
-            </Text>
-            <div style={{ fontSize: 12, color: "rgba(71, 85, 105, 0.76)", marginTop: 2 }}>
-              {cost.total_llm_tokens} tokens
-            </div>
-          </div>
+          <Text style={{ color: "#0f172a", whiteSpace: "nowrap" }}>
+            {cost.total_llm_tokens.toLocaleString("zh-CN")} tokens
+          </Text>
         );
       },
     },
     {
       title: "操作",
       dataIndex: "id",
-      width: 170,
+      width: "9%",
       align: "center" as const,
       render: (_: unknown, record: ReviewTask) => (
-        <Space spacing={6}>
-          <Button
-            icon={<IconFile />}
-            theme="borderless"
-            type="tertiary"
-            aria-label="进入评审"
-            style={{ color: "#4f46e5" }}
+        <TableActionGroup>
+          <TableActionButton
+            tone="detail"
+            label="详情"
+            icon={<TaskDetailIcon />}
             onClick={() => nav(`/tasks/${record.id}/materials`)}
           />
           {record.review_status === "completed" ? (
-            <Button
-              icon={<IconDownload />}
-              theme="borderless"
-              type="tertiary"
-              aria-label="下载 Word 审查意见书到本地"
-              style={{ color: "#93fbcf" }}
+            <TableActionButton
+              tone="success"
+              label="下载 Word 审查意见书"
+              icon={<IconDownloadStroked />}
               onClick={() =>
                 void downloadIssueReportWord(record.id, record.name).catch((e) =>
                   Toast.error(e instanceof Error ? e.message : "下载失败")
@@ -227,40 +278,43 @@ export default function TaskHome({ phase }: { phase: ReviewPhase }) {
               }
             />
           ) : null}
-          <Button
+          <TableActionButton
+            tone="danger"
+            label="删除"
             icon={<IconDeleteStroked />}
-            theme="borderless"
-            type="danger"
-            aria-label="删除"
             onClick={() => void onDelete(record.id, record.name)}
           />
-        </Space>
+        </TableActionGroup>
       ),
     },
   ];
 
-  const dataSource = slice.map((t) => ({
+  const dataSource = items.map((t, idx) => ({
     ...t,
     key: t.id,
+    row_no: (pageSafe - 1) * pageSize + idx + 1,
   }));
+
+  const emptyIsFiltered =
+    listTotal === 0 && (Boolean(search.trim()) || statusFilter !== "all");
 
   return (
     <Space vertical spacing="loose" style={{ width: "100%", alignItems: "stretch" }}>
-      <Card bordered={false} style={shellCard} className="tech-enter tech-enter-1" bodyStyle={{ padding: 0 }}>
+      <Card bordered={false} style={pageShellList} className="tech-enter tech-enter-1 page-shell-list" bodyStyle={{ padding: 0 }}>
         <div className="taskhome-toolbar">
           <Title heading={5} style={{ margin: 0, color: "#0f172a" }}>
-            {phaseTitle} · 任务列表
+            {phaseTitle}任务列表
           </Title>
           <Space wrap style={{ justifyContent: "flex-end" }}>
-            <Button theme="solid" type="primary" onClick={() => nav(newTaskPath)} style={techPrimaryBtn}>
+            <Button theme="solid" type="primary" onClick={() => nav(newTaskPath)} style={techPrimaryButton}>
               + 新建{phaseTitle}任务
             </Button>
             <Input
-              prefix={<IconSearch />}
-              placeholder="搜索评审任务名称"
+              prefix={<IconSearchStroked />}
+              placeholder="搜索任务名称 / 项目名称 / 版本"
               value={search}
               onChange={setSearch}
-              style={toolbarInputStyle}
+              style={toolbarSearchInput}
             />
             <Select
               className="taskhome-filter-select"
@@ -282,13 +336,17 @@ export default function TaskHome({ phase }: { phase: ReviewPhase }) {
           </div>
         ) : null}
 
-        <div style={{ padding: loading || total === 0 ? 24 : 0 }}>
+        <div className="taskhome-table-wrap" style={{ padding: loading || listTotal === 0 ? 24 : 0 }}>
           {loading ? (
             <Spin size="large" style={{ display: "block", margin: "48px auto" }} />
-          ) : total === 0 ? (
+          ) : listTotal === 0 ? (
             <Empty
-              title="暂无任务"
-              description="创建第一个评审任务后，就可以上传材料并触发自动解析与问题审查。"
+              title={emptyIsFiltered ? "无匹配结果" : "暂无任务"}
+              description={
+                emptyIsFiltered
+                  ? "尝试调整搜索关键词或状态筛选。"
+                  : "创建第一个评审任务后，就可以上传材料并触发自动解析与问题审查。"
+              }
               style={{ padding: "40px 0" }}
             />
           ) : (
@@ -298,17 +356,20 @@ export default function TaskHome({ phase }: { phase: ReviewPhase }) {
               dataSource={dataSource}
               pagination={false}
               size="small"
+              tableLayout="fixed"
+              style={{ width: "100%" }}
             />
           )}
         </div>
 
-        {!loading && total > 0 ? (
+        {!loading && listTotal > 0 ? (
           <div className="taskhome-pagination">
             <Typography.Text style={{ color: "rgba(51, 65, 85, 0.84)" }}>
-              当前筛选结果 <strong style={{ color: "#0f172a" }}>{total}</strong> 条
+              当前筛选结果 <strong style={{ color: "#0f172a" }}>{listTotal}</strong> 条
             </Typography.Text>
             <Pagination
-              total={total}
+              className="taskhome-pagination-control"
+              total={listTotal}
               currentPage={pageSafe}
               pageSize={pageSize}
               showSizeChanger
@@ -323,25 +384,3 @@ export default function TaskHome({ phase }: { phase: ReviewPhase }) {
     </Space>
   );
 }
-
-const shellCard = {
-  width: "100%",
-  borderRadius: 24,
-  border: "1px solid rgba(255, 255, 255, 0.9)",
-  background: "linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(247, 248, 255, 0.86))",
-  boxShadow: "0 24px 60px rgba(111, 123, 168, 0.14)",
-} as const;
-
-const toolbarInputStyle = {
-  width: 240,
-  background: "rgba(255, 255, 255, 0.88)",
-  border: "1px solid rgba(203, 213, 225, 0.9)",
-  color: "#0f172a",
-} as const;
-
-const techPrimaryBtn = {
-  borderRadius: 999,
-  background: "linear-gradient(90deg, #20d2cc, #2c7ef8)",
-  border: "none",
-  boxShadow: "0 12px 28px rgba(35, 157, 226, 0.28)",
-} as const;

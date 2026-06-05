@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import List, Literal, Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -30,13 +30,27 @@ class UserCreate(BaseModel):
     role: UserRole = "user"
 
 
+class UserUpdate(BaseModel):
+    display_name: Optional[str] = Field(None, max_length=128)
+    role: Optional[UserRole] = None
+    is_active: Optional[bool] = None
+    password: Optional[str] = Field(None, min_length=6, max_length=128)
+
+
+class ProfileUpdate(BaseModel):
+    display_name: Optional[str] = Field(None, max_length=128)
+
+
 class UserOut(BaseModel):
     id: int
     username: str
     display_name: str
     role: UserRole
     is_active: bool
+    avatar_url: Optional[str] = None
     created_at: Optional[datetime]
+    updated_at: Optional[datetime] = None
+    updated_by_name: str = "—"
 
     class Config:
         from_attributes = True
@@ -53,6 +67,8 @@ class BootstrapStatusOut(BaseModel):
 
 class TaskCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
+    project_key: Optional[str] = Field(None, max_length=128, description="项目名称，用于区分不同建设事项")
+    version: Optional[str] = Field(None, max_length=64, description="版本号，同一 project_key 下多稿次")
     llm_agent_id: Optional[int] = None
     phase: ReviewPhase = "implementation"
     project_id: Optional[int] = None
@@ -60,6 +76,8 @@ class TaskCreate(BaseModel):
 
 class TaskUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=255)
+    project_key: Optional[str] = Field(None, max_length=128)
+    version: Optional[str] = Field(None, max_length=64)
     proposal_body: Optional[str] = None
     summary_highlights: Optional[str] = None
     summary_issues: Optional[str] = None
@@ -72,12 +90,16 @@ class TaskOut(BaseModel):
 
     id: int
     name: str
+    project_key: Optional[str] = None
+    version: Optional[str] = None
     proposal_body: Optional[str]
     summary_highlights: Optional[str]
     summary_issues: Optional[str]
     created_at: Optional[datetime]
+    updated_at: Optional[datetime] = None
     review_status: ReviewStatus = "in_progress"
     username: str = "系统"
+    updated_by_name: str = "—"
     llm_agent_id: Optional[int] = None
     review_summary: Optional[str] = None
     analysis_status: AnalysisStatus = "draft"
@@ -100,12 +122,16 @@ class TaskOut(BaseModel):
         return cls(
             id=task.id,
             name=task.name,
+            project_key=getattr(task, "project_key", None),
+            version=getattr(task, "version", None),
             proposal_body=task.proposal_body,
             summary_highlights=task.summary_highlights,
             summary_issues=task.summary_issues,
             created_at=task.created_at,
+            updated_at=getattr(task, "updated_at", None),
             review_status=review_status,
             username=username,
+            updated_by_name=getattr(task, "updated_by_name", "—"),
             llm_agent_id=getattr(task, "llm_agent_id", None),
             review_summary=getattr(task, "review_summary", None),
             analysis_status=getattr(task, "analysis_status", "draft"),
@@ -143,6 +169,8 @@ class FrameworkVersionOut(BaseModel):
     original_filename: str
     created_at: Optional[datetime]
     text_char_count: int
+    # 上传人显示名或登录名；无记录时为 —
+    username: str = "—"
 
 
 class FrameworkCurrentResponse(BaseModel):
@@ -150,21 +178,16 @@ class FrameworkCurrentResponse(BaseModel):
     current: Optional[FrameworkVersionOut] = None
 
 
-class ScoreUpsert(BaseModel):
-    indicator_id: int = Field(..., ge=1, le=50)
-    score: int = Field(..., ge=0, le=10)
-    notes: Optional[str] = None
+class FrameworkCriteriaPreviewOut(BaseModel):
+    """当前阶段最新要点版本的正文预览（与注入提示词的截断规则一致）。"""
 
-
-class ScoreOut(BaseModel):
-    id: int
-    task_id: int
-    indicator_id: int
-    score: Optional[int]
-    notes: Optional[str]
-
-    class Config:
-        from_attributes = True
+    phase: str
+    version_seq: int
+    original_filename: str
+    created_at: Optional[datetime] = None
+    username: str = "—"
+    text: str
+    text_was_truncated: bool = False
 
 
 class AttachmentOut(BaseModel):
@@ -381,28 +404,6 @@ class MonthlyCostSummaryOut(BaseModel):
     estimated_cost_high_cny: float = 0
 
 
-class IndicatorReportRow(BaseModel):
-    indicator_id: int
-    title: str
-    score: Optional[int]
-    max_score: int = 10
-    notes: Optional[str]
-
-
-class OverallReport(BaseModel):
-    task_id: int
-    task_name: str
-    total_score: int
-    max_total: int = 50
-    conclusion_code: Literal["pass", "rectify", "reject"]
-    conclusion_label: str
-    reasons: List[str]
-    indicators: List[IndicatorReportRow]
-    summary_highlights: Optional[str]
-    summary_issues: Optional[str]
-    review_summary: Optional[str] = None
-
-
 class LlmAgentCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=128)
     provider: Literal["deepseek", "openai", "custom"] = "deepseek"
@@ -436,64 +437,114 @@ class LlmAgentOut(BaseModel):
     key_hint: str
     system_prompt: Optional[str]
     created_at: Optional[datetime]
+    updated_at: Optional[datetime] = None
+    # 归属用户显示名或登录名
+    username: str = "—"
 
     class Config:
         from_attributes = True
 
 
-class AiSuggestBody(BaseModel):
-    """若省略 agent_id，则使用任务上绑定的 llm_agent_id。"""
-
-    agent_id: Optional[int] = None
-
-
-class AiScoreItemOut(BaseModel):
-    indicator_id: int
-    score: int
-    notes: str
+class PaginatedTaskListOut(BaseModel):
+    items: list[TaskOut]
+    total: int
+    page: int
+    page_size: int
 
 
-class AiSuggestOut(BaseModel):
-    items: List[AiScoreItemOut]
-    raw_excerpt: str
-    agent_id: int
-    agent_name: str
+class PaginatedUserListOut(BaseModel):
+    items: list[UserOut]
+    total: int
+    page: int
+    page_size: int
 
 
-class AiReportItemOut(BaseModel):
-    indicator_id: int
-    score: int
-    notes: str
-    opinion: str
+class PaginatedLlmAgentListOut(BaseModel):
+    items: list[LlmAgentOut]
+    total: int
+    page: int
+    page_size: int
 
 
-class AiReportOut(BaseModel):
-    items: List[AiReportItemOut]
-    conclusion: str
-    highlights: str
-    issues: str
-    raw_excerpt: str
-    agent_id: int
-    agent_name: str
+class ReviewTaskMetricsOut(BaseModel):
+    """任务计数；completed 与 TaskOut.review_status 一致（analysis_status == reviewed）。"""
+
+    total: int
+    in_progress: int
+    completed: int
 
 
-class AiReviewRunOut(BaseModel):
-    task: TaskOut
-    report: OverallReport
-    raw_excerpt: str
-    agent_id: int
-    agent_name: str
+class MemoryProfileOut(BaseModel):
+    task_id: int
+    task_name: str
+    project_key: Optional[str] = None
+    version: Optional[str] = None
+    phase: Optional[str] = None
+    analysis_status: Optional[str] = None
+    index_status: str = "pending"
+    index_error: Optional[str] = None
+    summary_text: Optional[str] = None
+    project_overview: Optional[str] = None
+    goals: list[str] = []
+    capabilities: list[str] = []
+    core_functions: list[str] = []
+    systems: list[str] = []
+    keywords: list[str] = []
+    char_count: Optional[int] = None
+    chunk_count: Optional[int] = None
+    indexed_at: Optional[datetime] = None
 
 
-class AiReportApplyItem(BaseModel):
-    indicator_id: int = Field(..., ge=1, le=50)
-    score: int = Field(..., ge=0, le=10)
-    notes: str = ""
-    opinion: str = ""
+class MemoryLibraryOut(BaseModel):
+    items: list[MemoryProfileOut]
+    total: int
 
 
-class AiReportApplyBody(BaseModel):
-    items: List[AiReportApplyItem]
-    conclusion: str = ""
-    highlights: str = ""
-    issues: str = ""
+class MemorySimilarItemOut(BaseModel):
+    task_id: int
+    task_name: str
+    project_key: Optional[str] = None
+    version: Optional[str] = None
+    phase: Optional[str] = None
+    similarity_score: float
+    overlap_keywords: list[str] = []
+    summary_text: Optional[str] = None
+
+
+class MemorySimilarListOut(BaseModel):
+    source_task_id: int
+    source_project_key: Optional[str] = None
+    items: list[MemorySimilarItemOut]
+
+
+class MemoryChunkPairOut(BaseModel):
+    score: float
+    source_chunk_id: int
+    source_file_name: str
+    source_section_title: Optional[str] = None
+    source_excerpt: str
+    target_chunk_id: int
+    target_file_name: str
+    target_section_title: Optional[str] = None
+    target_excerpt: str
+
+
+class MemoryCompareOut(BaseModel):
+    comparable: bool
+    message: str
+    similarity_score: float = 0.0
+    duplicate_risk: str = "none"
+    overlap_keywords: list[str] = []
+    findings: list[str] = []
+    source: MemoryProfileOut
+    target: MemoryProfileOut
+    chunk_pairs: list[MemoryChunkPairOut] = []
+
+
+class MemoryCompareBody(BaseModel):
+    source_task_id: int
+    target_task_id: int
+
+
+class MemoryReindexOut(BaseModel):
+    indexed_count: int

@@ -15,11 +15,14 @@ export type IssueStatus = "open" | "accepted" | "dismissed" | "revised";
 export interface ReviewTask {
   id: number;
   name: string;
+  project_key: string | null;
+  version: string | null;
   proposal_body: string | null;
   summary_highlights: string | null;
   summary_issues: string | null;
   review_summary: string | null;
   created_at: string | null;
+  updated_at: string | null;
   review_status: ReviewStatus;
   username: string;
   llm_agent_id?: number | null;
@@ -48,11 +51,24 @@ export interface FrameworkVersionInfo {
   original_filename: string;
   created_at: string | null;
   text_char_count: number;
+  /** 上传人显示名或登录名 */
+  username?: string;
 }
 
 export interface FrameworkCurrentResponse {
   phase: string;
   current: FrameworkVersionInfo | null;
+}
+
+/** GET /api/review-framework/{phase}/preview-text */
+export interface FrameworkCriteriaPreview {
+  phase: string;
+  version_seq: number;
+  original_filename: string;
+  created_at: string | null;
+  username?: string;
+  text: string;
+  text_was_truncated: boolean;
 }
 
 export interface AppUser {
@@ -61,7 +77,25 @@ export interface AppUser {
   display_name: string;
   role: UserRole;
   is_active: boolean;
+  avatar_url: string | null;
   created_at: string | null;
+  updated_at: string | null;
+  updated_by_name?: string;
+}
+
+/** 列表接口统一分页结构 */
+export interface Paginated<T> {
+  items: T[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+/** GET /api/review-tasks/metrics */
+export interface ReviewTaskMetrics {
+  total: number;
+  in_progress: number;
+  completed: number;
 }
 
 export interface AuthResult {
@@ -84,31 +118,9 @@ export interface LlmAgent {
   key_hint: string;
   system_prompt: string | null;
   created_at: string | null;
-}
-
-export interface AiSuggestResult {
-  items: { indicator_id: number; score: number; notes: string }[];
-  raw_excerpt: string;
-  agent_id: number;
-  agent_name: string;
-}
-
-export interface AiReportResult {
-  items: { indicator_id: number; score: number; notes: string; opinion: string }[];
-  conclusion: string;
-  highlights: string;
-  issues: string;
-  raw_excerpt: string;
-  agent_id: number;
-  agent_name: string;
-}
-
-export interface AiReviewRunResult {
-  task: ReviewTask;
-  report: OverallReport;
-  raw_excerpt: string;
-  agent_id: number;
-  agent_name: string;
+  updated_at: string | null;
+  /** 归属用户显示名或登录名 */
+  username?: string;
 }
 
 export interface Secondary {
@@ -152,38 +164,9 @@ export interface Framework {
     project_types?: { id: string; label: string }[];
     optional_weights_note?: string;
   };
-  indicators: Indicator[];
+  /** 历史框架字段；当前以 dimensions 驱动问题审查 */
+  indicators?: Indicator[];
   dimensions?: ReviewDimension[];
-}
-
-export interface IndicatorScoreRow {
-  id: number;
-  task_id: number;
-  indicator_id: number;
-  score: number | null;
-  notes: string | null;
-}
-
-export interface IndicatorReportRow {
-  indicator_id: number;
-  title: string;
-  score: number | null;
-  max_score: number;
-  notes: string | null;
-}
-
-export interface OverallReport {
-  task_id: number;
-  task_name: string;
-  total_score: number;
-  max_total: number;
-  conclusion_code: "pass" | "rectify" | "reject";
-  conclusion_label: string;
-  reasons: string[];
-  indicators: IndicatorReportRow[];
-  summary_highlights: string | null;
-  summary_issues: string | null;
-  review_summary: string | null;
 }
 
 export interface Attachment {
@@ -359,4 +342,77 @@ export interface ReviewRun {
   started_at: string | null;
   finished_at: string | null;
   error_message: string | null;
+}
+
+export type MemoryDuplicateRisk = "none" | "low" | "medium" | "high";
+
+export interface MemoryProfile {
+  task_id: number;
+  task_name: string;
+  project_key: string | null;
+  version: string | null;
+  phase: ReviewPhase | null;
+  analysis_status: string | null;
+  index_status: string;
+  index_error: string | null;
+  summary_text: string | null;
+  project_overview: string | null;
+  goals: string[];
+  capabilities: string[];
+  core_functions: string[];
+  systems: string[];
+  keywords: string[];
+  char_count: number | null;
+  chunk_count: number | null;
+  indexed_at: string | null;
+}
+
+export interface MemoryLibraryResult {
+  items: MemoryProfile[];
+  total: number;
+}
+
+export interface MemorySimilarItem {
+  task_id: number;
+  task_name: string;
+  project_key: string | null;
+  version: string | null;
+  phase: ReviewPhase | null;
+  similarity_score: number;
+  overlap_keywords: string[];
+  summary_text: string | null;
+}
+
+export interface MemorySimilarListResult {
+  source_task_id: number;
+  source_project_key: string | null;
+  items: MemorySimilarItem[];
+}
+
+export interface MemoryChunkPair {
+  score: number;
+  source_chunk_id: number;
+  source_file_name: string;
+  source_section_title: string | null;
+  source_excerpt: string;
+  target_chunk_id: number;
+  target_file_name: string;
+  target_section_title: string | null;
+  target_excerpt: string;
+}
+
+export interface MemoryCompareResult {
+  comparable: boolean;
+  message: string;
+  similarity_score: number;
+  duplicate_risk: MemoryDuplicateRisk;
+  overlap_keywords: string[];
+  findings: string[];
+  source: MemoryProfile;
+  target: MemoryProfile;
+  chunk_pairs: MemoryChunkPair[];
+}
+
+export interface MemoryReindexResult {
+  indexed_count: number;
 }

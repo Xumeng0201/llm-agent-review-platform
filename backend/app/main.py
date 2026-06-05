@@ -1,14 +1,16 @@
 import json
 import shutil
+import threading
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
-from datetime import datetime, timezone
 
 import httpx
 from fastapi import Depends, FastAPI, File, Header, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
-from sqlalchemy.orm import Session
+from sqlalchemy import or_
+from sqlalchemy.orm import Session, joinedload
 from urllib.parse import quote
 
 from .auth_utils import (
@@ -19,53 +21,56 @@ from .auth_utils import (
     session_expiry,
     verify_password,
 )
-from .ai_scoring import run_ai_report, run_ai_suggest
-from .attachment_text import collect_attachment_evidence
 from .chunking import split_text_to_chunks
-from .database import Base, engine, get_db, migrate_sqlite_schema
 from .doc_parse import parse_path
-from .framework_criteria import extract_text_from_docx
+from .database import Base, engine, get_db, migrate_sqlite_schema
+from .project_identity import resolve_project_identity
+from .framework_criteria import MAX_CRITERIA_CHARS, clip_criteria_text, extract_text_from_docx
 from .models import (
     Attachment,
     AuthSession,
     DocumentChunk,
     DocumentFile,
-    IndicatorScore,
     IssueEvidence,
     LlmAgent,
     ReviewFrameworkVersion,
     ReviewIssue,
     ReviewProject,
     ReviewRun,
+    ProjectMemoryProfile,
     ReviewTask,
     User,
 )
-from .report_html import build_report_html
 from .issue_report import build_issue_report_docx_bytes, build_issue_report_html
+from .cross_project_memory import (
+    project_overview_from_profile,
+    build_profile_from_task,
+    compare_tasks,
+    ensure_task_memory_index,
+    find_similar_tasks,
+    list_ready_profiles,
+    reindex_all_ready_tasks,
+    resolve_task_project_key,
+)
 from .review_engine import run_issue_review_for_task
 from .token_estimator import estimate_task_token_usage
 from .schemas import (
-    AiReportApplyBody,
-    AiReportItemOut,
-    AiReportOut,
-    AiReviewRunOut,
-    AiScoreItemOut,
     AnalysisStatusOut,
     AnalyzeRunBody,
     AuthOut,
-    AiSuggestBody,
-    AiSuggestOut,
     AttachmentOut,
     BootstrapStatusOut,
     DocumentChunkOut,
     DocumentFileOut,
     BootstrapAdminBody,
     DimensionTokenEstimateOut,
-    IndicatorReportRow,
     LlmAgentCreate,
     LlmAgentOut,
     LlmAgentUpdate,
-    OverallReport,
+    PaginatedLlmAgentListOut,
+    PaginatedTaskListOut,
+    PaginatedUserListOut,
+    ProfileUpdate,
     ReviewIssueListOut,
     ReviewIssueOut,
     ReviewIssueUpdate,
@@ -76,34 +81,113 @@ from .schemas import (
     TaskCostOverviewItemOut,
     CostCompareItemOut,
     MonthlyCostSummaryOut,
+    MemoryProfileOut,
+    MemoryLibraryOut,
+    MemorySimilarListOut,
+    MemorySimilarItemOut,
+    MemoryCompareOut,
+    MemoryCompareBody,
+    MemoryChunkPairOut,
+    MemoryReindexOut,
+    FrameworkCriteriaPreviewOut,
     FrameworkCurrentResponse,
     FrameworkVersionOut,
-    ScoreOut,
-    ScoreUpsert,
     LoginBody,
     ProjectCreate,
     ProjectOut,
+    ReviewTaskMetricsOut,
     TaskTokenEstimateOut,
     TaskCreate,
     TaskOut,
     TaskUpdate,
     UserCreate,
     UserOut,
+    UserUpdate,
 )
-from .verdict import compute_from_scores
 
 APP_DIR = Path(__file__).resolve().parent
 ROOT_DIR = APP_DIR.parent
 DATA_DIR = ROOT_DIR / "data"
 UPLOAD_DIR = DATA_DIR / "uploads"
+AVATAR_DIR = DATA_DIR / "avatars"
 FRAMEWORK_CRITERIA_DIR = DATA_DIR / "framework_criteria"
 
 FRAMEWORK_PATH = APP_DIR / "framework.json"
+FRAMEWORK_PRE_PATH = APP_DIR / "framework_pre_review.json"
 TEMPLATE_SCHEMA_PATH = APP_DIR / "template_schema.json"
 
+_task_review_locks: dict[int, threading.Lock] = {}
+_task_review_locks_guard = threading.Lock()
 
-def load_framework() -> dict:
-    with open(FRAMEWORK_PATH, encoding="utf-8") as f:
+
+def _task_review_lock(task_id: int) -> threading.Lock:
+    with _task_review_locks_guard:
+        if task_id not in _task_review_locks:
+            _task_review_locks[task_id] = threading.Lock()
+        return _task_review_locks[task_id]
+
+
+def _prepare_task_for_issue_review(db: Session, task: ReviewTask, *, force: bool) -> None:
+    """防止重复点击导致并发审查；允许 failed 后重试。"""
+    now = datetime.now(timezone.utc)
+    stale_before = now - timedelta(minutes=35)
+    stale_runs = (
+        db.query(ReviewRun)
+        .filter(
+            ReviewRun.task_id == task.id,
+            ReviewRun.status == "running",
+            ReviewRun.started_at < stale_before,
+        )
+        .all()
+    )
+    for run in stale_runs:
+        run.status = "failed"
+        run.error_message = "审查超时，已自动终止"
+        run.finished_at = now
+
+    if task.analysis_status == "reviewing" and not force:
+        active = (
+            db.query(ReviewRun)
+            .filter_by(task_id=task.id, status="running")
+            .order_by(ReviewRun.id.desc())
+            .first()
+        )
+        if active:
+            raise HTTPException(
+                409,
+                "该任务正在问题审查中（通常需数分钟），请勿重复点击。"
+                "若超过 35 分钟仍无结果，请刷新页面后再试。",
+            )
+        task.analysis_status = "indexed"
+
+    allowed = {"indexed", "reviewed", "failed"}
+    if task.analysis_status not in allowed and not force:
+        raise HTTPException(400, "当前任务尚未完成材料解析，请先解析材料")
+
+    for run in db.query(ReviewRun).filter_by(task_id=task.id, status="running").all():
+        run.status = "failed"
+        run.error_message = "已有新的审查请求，本条已取消"
+        run.finished_at = now
+
+    db.commit()
+    db.refresh(task)
+
+
+def _task_phase(task) -> str:
+    ph = getattr(task, "phase", None) if task is not None else None
+    if ph in ("pre_review", "implementation"):
+        return ph
+    return "implementation"
+
+
+def load_framework(phase: str = "implementation") -> dict:
+    """实施方案使用 framework.json；方案预审使用 framework_pre_review.json（维度与检索词不同）。"""
+    if phase not in ("pre_review", "implementation"):
+        phase = "implementation"
+    path = FRAMEWORK_PRE_PATH if phase == "pre_review" else FRAMEWORK_PATH
+    if phase == "pre_review" and not FRAMEWORK_PRE_PATH.exists():
+        path = FRAMEWORK_PATH
+    with open(path, encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -139,6 +223,7 @@ def parser_capabilities() -> ParserCapabilityOut:
 def ensure_dirs():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    AVATAR_DIR.mkdir(parents=True, exist_ok=True)
     FRAMEWORK_CRITERIA_DIR.mkdir(parents=True, exist_ok=True)
     (FRAMEWORK_CRITERIA_DIR / "pre_review").mkdir(parents=True, exist_ok=True)
     (FRAMEWORK_CRITERIA_DIR / "implementation").mkdir(parents=True, exist_ok=True)
@@ -177,7 +262,20 @@ def _next_framework_seq(db: Session, phase: str) -> int:
     return (row.version_seq + 1) if row else 1
 
 
-def _framework_version_to_out(fv: ReviewFrameworkVersion) -> FrameworkVersionOut:
+def _owner_display_name(db: Session, user_id: Optional[int]) -> str:
+    if user_id is None:
+        return "—"
+    u = db.get(User, user_id)
+    if not u:
+        return "—"
+    return ((u.display_name or "").strip() or u.username)
+
+
+def _updater_display_name(db: Session, user_id: Optional[int]) -> str:
+    return _owner_display_name(db, user_id)
+
+
+def _framework_version_to_out(db: Session, fv: ReviewFrameworkVersion) -> FrameworkVersionOut:
     return FrameworkVersionOut(
         id=fv.id,
         phase=fv.phase,
@@ -185,23 +283,8 @@ def _framework_version_to_out(fv: ReviewFrameworkVersion) -> FrameworkVersionOut
         original_filename=fv.original_filename,
         created_at=fv.created_at,
         text_char_count=len(fv.extracted_text or ""),
+        username=_owner_display_name(db, getattr(fv, "created_by_user_id", None)),
     )
-
-
-def init_scores_for_task(db: Session, task_id: int):
-    indicator_count = len(load_framework().get("indicators", []))
-    existing = {r.indicator_id for r in db.query(IndicatorScore).filter_by(task_id=task_id).all()}
-    for i in range(1, indicator_count + 1):
-        if i not in existing:
-            db.add(
-                IndicatorScore(
-                    task_id=task_id,
-                    indicator_id=i,
-                    score=None,
-                    notes=None,
-                )
-            )
-    db.commit()
 
 
 def compute_review_status(db: Session, task_id: int) -> str:
@@ -214,8 +297,26 @@ def compute_review_status(db: Session, task_id: int) -> str:
     return "in_progress"
 
 
-def user_to_out(user: User) -> UserOut:
-    return UserOut.model_validate(user)
+def _stamp_user_update(user: User, updater_id: int) -> None:
+    user.updated_by_user_id = updater_id
+    user.updated_at = datetime.now(timezone.utc)
+
+
+def user_to_out(db: Session, user: User) -> UserOut:
+    avatar_path = (getattr(user, "avatar_path", None) or "").strip()
+    return UserOut(
+        id=user.id,
+        username=user.username,
+        display_name=user.display_name,
+        role=user.role,
+        is_active=user.is_active,
+        created_at=user.created_at,
+        updated_at=getattr(user, "updated_at", None),
+        avatar_url=f"/api/auth/me/avatar?v={Path(avatar_path).stat().st_mtime_ns}"
+        if avatar_path and Path(avatar_path).is_file()
+        else None,
+        updated_by_name=_updater_display_name(db, getattr(user, "updated_by_user_id", None)),
+    )
 
 
 def _bootstrap_needed(db: Session) -> bool:
@@ -224,11 +325,17 @@ def _bootstrap_needed(db: Session) -> bool:
 
 def task_to_out(db: Session, task: ReviewTask, username: str = "系统") -> TaskOut:
     st: str = compute_review_status(db, task.id)
-    owner_name = getattr(getattr(task, "user", None), "display_name", None) or username
-    return TaskOut.from_task(task, st, owner_name)
+    u = getattr(task, "user", None)
+    if u is not None:
+        owner_name = ((u.display_name or "").strip() or u.username)
+    else:
+        owner_name = username
+    out = TaskOut.from_task(task, st, owner_name)
+    out.updated_by_name = _updater_display_name(db, getattr(task, "updated_by_user_id", None))
+    return out
 
 
-def agent_to_out(a: LlmAgent) -> LlmAgentOut:
+def agent_to_out(db: Session, a: LlmAgent) -> LlmAgentOut:
     k = a.api_key or ""
     hint = ("****" + k[-4:]) if len(k) > 4 else ("****" if k else "")
     return LlmAgentOut(
@@ -240,6 +347,8 @@ def agent_to_out(a: LlmAgent) -> LlmAgentOut:
         key_hint=hint,
         system_prompt=getattr(a, "system_prompt", None),
         created_at=a.created_at,
+        updated_at=getattr(a, "updated_at", None),
+        username=_owner_display_name(db, a.user_id),
     )
 
 
@@ -287,6 +396,46 @@ def _get_task_or_404(db: Session, task_id: int, user: User) -> ReviewTask:
     return t
 
 
+def _get_task_any_or_404(db: Session, task_id: int) -> ReviewTask:
+    t = db.get(ReviewTask, task_id)
+    if not t:
+        raise HTTPException(404, "评审任务不存在")
+    return t
+
+
+def _json_list_field(raw: Optional[str]) -> list:
+    if not raw:
+        return []
+    try:
+        value = json.loads(raw)
+        return value if isinstance(value, list) else []
+    except Exception:
+        return []
+
+
+def _memory_profile_to_out(task: ReviewTask, profile: ProjectMemoryProfile) -> MemoryProfileOut:
+    return MemoryProfileOut(
+        task_id=task.id,
+        task_name=task.name,
+        project_key=profile.project_key,
+        version=profile.version,
+        phase=profile.phase or getattr(task, "phase", None),
+        analysis_status=getattr(task, "analysis_status", None),
+        index_status=profile.index_status,
+        index_error=profile.index_error,
+        summary_text=profile.summary_text,
+        project_overview=project_overview_from_profile(profile),
+        goals=_json_list_field(profile.goals_json),
+        capabilities=_json_list_field(profile.capabilities_json),
+        core_functions=_json_list_field(profile.core_functions_json),
+        systems=_json_list_field(profile.systems_json),
+        keywords=_json_list_field(profile.keywords_json),
+        char_count=profile.char_count,
+        chunk_count=profile.chunk_count,
+        indexed_at=profile.indexed_at,
+    )
+
+
 def _get_review_run_or_404(db: Session, run_id: int, user: User) -> ReviewRun:
     run = (
         db.query(ReviewRun)
@@ -309,98 +458,6 @@ def _get_issue_or_404(db: Session, issue_id: int, user: User) -> ReviewIssue:
     if not issue:
         raise HTTPException(404, "问题不存在")
     return issue
-
-
-def _resolve_agent_for_task(db: Session, task: ReviewTask, agent_id: Optional[int], user: User) -> LlmAgent:
-    resolved_id = agent_id if agent_id is not None else task.llm_agent_id
-    if resolved_id is None:
-        raise HTTPException(
-            400,
-            "请指定智能体：在请求体中传 agent_id，或在任务上绑定默认智能体。",
-        )
-    return _require_agent(db, resolved_id, user)
-
-
-def _collect_task_materials(db: Session, task_id: int, proposal: str) -> tuple[list[Attachment], str]:
-    attachments = (
-        db.query(Attachment)
-        .filter_by(task_id=task_id)
-        .order_by(Attachment.id)
-        .all()
-    )
-    if not proposal and not attachments:
-        raise HTTPException(
-            400,
-            "请先填写「方案说明」或上传方案附件，以便智能体评审。",
-        )
-    evidence = collect_attachment_evidence(attachments)
-    return attachments, evidence
-
-
-def _apply_report_result(db: Session, task_id: int, task: ReviewTask, result) -> None:
-    init_scores_for_task(db, task_id)
-    task.review_summary = result.conclusion.strip() or None
-    task.summary_highlights = result.highlights.strip() or None
-    task.summary_issues = result.issues.strip() or None
-    for it in result.items:
-        parts: list[str] = []
-        if (it.notes or "").strip():
-            parts.append(it.notes.strip())
-        if (it.opinion or "").strip():
-            parts.append("【评审意见】" + it.opinion.strip())
-        combined = "\n".join(parts) if parts else None
-        r = (
-            db.query(IndicatorScore)
-            .filter_by(task_id=task_id, indicator_id=it.indicator_id)
-            .first()
-        )
-        if not r:
-            r = IndicatorScore(task_id=task_id, indicator_id=it.indicator_id)
-            db.add(r)
-        r.score = it.score
-        r.notes = combined
-    db.commit()
-    db.refresh(task)
-
-
-def build_overall_report(db: Session, task: ReviewTask) -> OverallReport:
-    init_scores_for_task(db, task.id)
-    rows_db = (
-        db.query(IndicatorScore)
-        .filter_by(task_id=task.id)
-        .order_by(IndicatorScore.indicator_id)
-        .all()
-    )
-    fw = load_framework()
-    max_total = len(fw["indicators"]) * 10
-    id_to_title = {x["id"]: x["title"] for x in fw["indicators"]}
-    scores_map: dict[int, Optional[int]] = {}
-    indicators: list[IndicatorReportRow] = []
-    for r in rows_db:
-        scores_map[r.indicator_id] = r.score
-        indicators.append(
-            IndicatorReportRow(
-                indicator_id=r.indicator_id,
-                title=id_to_title.get(r.indicator_id, str(r.indicator_id)),
-                score=r.score,
-                max_score=10,
-                notes=r.notes,
-            )
-        )
-    code, label, reasons, total = compute_from_scores(scores_map)
-    return OverallReport(
-        task_id=task.id,
-        task_name=task.name,
-        total_score=total,
-        max_total=max_total,
-        conclusion_code=code,
-        conclusion_label=label,
-        reasons=reasons,
-        indicators=indicators,
-        summary_highlights=task.summary_highlights,
-        summary_issues=task.summary_issues,
-        review_summary=getattr(task, "review_summary", None),
-    )
 
 
 def build_issue_summary(task: ReviewTask, issues: list[ReviewIssue]) -> ReviewSummaryOut:
@@ -426,7 +483,7 @@ def build_issue_summary(task: ReviewTask, issues: list[ReviewIssue]) -> ReviewSu
 
 
 def _rebuild_task_documents(db: Session, task: ReviewTask) -> None:
-    dimensions = load_framework().get("dimensions") or []
+    dimensions = load_framework(_task_phase(task)).get("dimensions") or []
 
     db.query(DocumentChunk).filter_by(task_id=task.id).delete()
     db.query(DocumentFile).filter_by(task_id=task.id).delete()
@@ -614,7 +671,7 @@ def bootstrap_admin(body: BootstrapAdminBody, db: Session = Depends(get_db)):
     db.add(session)
     db.commit()
     db.refresh(session)
-    return AuthOut(token=session.token, user=user_to_out(user))
+    return AuthOut(token=session.token, user=user_to_out(db, user))
 
 
 @app.post("/api/auth/login", response_model=AuthOut)
@@ -633,12 +690,62 @@ def login(body: LoginBody, db: Session = Depends(get_db)):
     db.add(session)
     db.commit()
     db.refresh(session)
-    return AuthOut(token=session.token, user=user_to_out(user))
+    return AuthOut(token=session.token, user=user_to_out(db, user))
 
 
 @app.get("/api/auth/me", response_model=UserOut)
-def auth_me(current_user: User = Depends(_get_current_user)):
-    return user_to_out(current_user)
+def auth_me(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(_get_current_user),
+):
+    return user_to_out(db, current_user)
+
+
+@app.patch("/api/auth/me", response_model=UserOut)
+def update_my_profile(
+    body: ProfileUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(_get_current_user),
+):
+    if body.display_name is not None:
+        dn = body.display_name.strip()
+        current_user.display_name = dn if dn else default_display_name(current_user.username)
+    _stamp_user_update(current_user, current_user.id)
+    db.commit()
+    db.refresh(current_user)
+    return user_to_out(db, current_user)
+
+
+@app.get("/api/auth/me/avatar")
+def get_my_avatar(current_user: User = Depends(_get_current_user)):
+    path = (getattr(current_user, "avatar_path", None) or "").strip()
+    if not path or not Path(path).is_file():
+        raise HTTPException(404, "尚未上传头像")
+    return FileResponse(path)
+
+
+@app.post("/api/auth/me/avatar", response_model=UserOut)
+async def upload_my_avatar(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(_get_current_user),
+):
+    AVATAR_DIR.mkdir(parents=True, exist_ok=True)
+    raw_name = Path(file.filename or "avatar.png").name
+    suffix = Path(raw_name).suffix.lower()
+    allowed = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+    if suffix not in allowed:
+        raise HTTPException(400, "仅支持 JPG、PNG、GIF、WebP 格式头像")
+    content = await file.read()
+    if len(content) > 2 * 1024 * 1024:
+        raise HTTPException(400, "头像文件不能超过 2MB")
+    dest = AVATAR_DIR / f"user_{current_user.id}{suffix}"
+    dest.write_bytes(content)
+    current_user.avatar_path = str(dest)
+    _stamp_user_update(current_user, current_user.id)
+    db.commit()
+    db.refresh(current_user)
+    return user_to_out(db, current_user)
 
 
 @app.post("/api/auth/logout")
@@ -656,14 +763,33 @@ def logout(
     return {"ok": True}
 
 
-@app.get("/api/users", response_model=list[UserOut])
+@app.get("/api/users", response_model=PaginatedUserListOut)
 def list_users(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, ge=1, le=100),
+    q: Optional[str] = Query(None, description="用户名或显示名模糊搜索"),
     db: Session = Depends(get_db),
     admin_user: User = Depends(_require_admin),
 ):
     del admin_user
-    rows = db.query(User).order_by(User.id.asc()).all()
-    return [user_to_out(x) for x in rows]
+    base = db.query(User)
+    term = (q or "").strip()
+    if term:
+        pat = f"%{term}%"
+        base = base.filter(or_(User.username.ilike(pat), User.display_name.ilike(pat)))
+    total = base.count()
+    rows = (
+        base.order_by(User.id.asc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+    return PaginatedUserListOut(
+        items=[user_to_out(db, x) for x in rows],
+        total=total,
+        page=page,
+        page_size=page_size,
+    )
 
 
 @app.post("/api/users", response_model=UserOut)
@@ -685,16 +811,84 @@ def create_user(
         password_hash=hash_password(body.password),
         role=body.role,
         is_active=True,
+        updated_by_user_id=admin_user.id,
     )
     db.add(user)
     db.commit()
     db.refresh(user)
-    return user_to_out(user)
+    return user_to_out(db, user)
+
+
+def _active_admin_count(db: Session) -> int:
+    return (
+        db.query(User)
+        .filter(User.role == "admin", User.is_active.is_(True))
+        .count()
+    )
+
+
+@app.get("/api/users/{user_id}", response_model=UserOut)
+def get_user(
+    user_id: int,
+    db: Session = Depends(get_db),
+    admin_user: User = Depends(_require_admin),
+):
+    del admin_user
+    u = db.get(User, user_id)
+    if not u:
+        raise HTTPException(404, "用户不存在")
+    return user_to_out(db, u)
+
+
+@app.patch("/api/users/{user_id}", response_model=UserOut)
+def update_user(
+    user_id: int,
+    body: UserUpdate,
+    db: Session = Depends(get_db),
+    admin_user: User = Depends(_require_admin),
+):
+    target = db.get(User, user_id)
+    if not target:
+        raise HTTPException(404, "用户不存在")
+
+    final_role = body.role if body.role is not None else target.role
+    final_active = body.is_active if body.is_active is not None else target.is_active
+
+    if admin_user.id == target.id and final_active is False:
+        raise HTTPException(400, "不能停用自己的账号")
+
+    was_admin_active = target.role == "admin" and target.is_active
+    will_be_admin_active = final_role == "admin" and final_active
+    if was_admin_active and not will_be_admin_active:
+        if _active_admin_count(db) - 1 < 1:
+            raise HTTPException(400, "不能移除或停用最后一个管理员")
+
+    if body.display_name is not None:
+        dn = body.display_name.strip()
+        target.display_name = dn if dn else default_display_name(target.username)
+    if body.role is not None:
+        target.role = body.role
+    if body.is_active is not None:
+        target.is_active = body.is_active
+    if body.password is not None:
+        target.password_hash = hash_password(body.password)
+
+    _stamp_user_update(target, admin_user.id)
+
+    db.commit()
+    db.refresh(target)
+    return user_to_out(db, target)
 
 
 @app.get("/api/framework")
-def get_framework():
-    return load_framework()
+def get_framework(
+    phase: Optional[str] = Query(
+        None,
+        description="pre_review=方案预审维度；implementation=实施方案维度；缺省为 implementation",
+    ),
+):
+    ph = phase if phase in ("pre_review", "implementation") else "implementation"
+    return load_framework(ph)
 
 
 @app.get("/api/template-schema")
@@ -707,18 +901,38 @@ def get_parser_capabilities():
     return parser_capabilities()
 
 
-@app.get("/api/llm-agents", response_model=list[LlmAgentOut])
+@app.get("/api/llm-agents", response_model=PaginatedLlmAgentListOut)
 def list_agents(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, ge=1, le=200),
+    q: Optional[str] = Query(None, description="名称或模型模糊搜索"),
+    provider: Optional[str] = Query(
+        None,
+        description="deepseek|openai|custom，不传则不限定提供方",
+    ),
     db: Session = Depends(get_db),
     current_user: User = Depends(_get_current_user),
 ):
+    base = db.query(LlmAgent).filter(LlmAgent.user_id == current_user.id)
+    if provider in ("deepseek", "openai", "custom"):
+        base = base.filter(LlmAgent.provider == provider)
+    term = (q or "").strip()
+    if term:
+        pat = f"%{term}%"
+        base = base.filter(or_(LlmAgent.name.ilike(pat), LlmAgent.model.ilike(pat)))
+    total = base.count()
     rows = (
-        db.query(LlmAgent)
-        .filter_by(user_id=current_user.id)
-        .order_by(LlmAgent.id.desc())
+        base.order_by(LlmAgent.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
         .all()
     )
-    return [agent_to_out(a) for a in rows]
+    return PaginatedLlmAgentListOut(
+        items=[agent_to_out(db, a) for a in rows],
+        total=total,
+        page=page,
+        page_size=page_size,
+    )
 
 
 @app.post("/api/llm-agents", response_model=LlmAgentOut)
@@ -739,7 +953,7 @@ def create_agent(
     db.add(a)
     db.commit()
     db.refresh(a)
-    return agent_to_out(a)
+    return agent_to_out(db, a)
 
 
 @app.get("/api/llm-agents/{agent_id}", response_model=LlmAgentOut)
@@ -749,7 +963,7 @@ def get_agent(
     current_user: User = Depends(_get_current_user),
 ):
     a = _require_agent(db, agent_id, current_user)
-    return agent_to_out(a)
+    return agent_to_out(db, a)
 
 
 @app.patch("/api/llm-agents/{agent_id}", response_model=LlmAgentOut)
@@ -777,7 +991,7 @@ def update_agent(
         raise HTTPException(400, "自定义接入必须填写 API Base")
     db.commit()
     db.refresh(a)
-    return agent_to_out(a)
+    return agent_to_out(db, a)
 
 
 @app.delete("/api/llm-agents/{agent_id}")
@@ -841,7 +1055,34 @@ def get_framework_current(
     fv = _latest_framework_version(db, ph)
     if not fv:
         return FrameworkCurrentResponse(phase=ph, current=None)
-    return FrameworkCurrentResponse(phase=ph, current=_framework_version_to_out(fv))
+    return FrameworkCurrentResponse(phase=ph, current=_framework_version_to_out(db, fv))
+
+
+@app.get(
+    "/api/review-framework/{phase}/preview-text",
+    response_model=FrameworkCriteriaPreviewOut,
+)
+def get_framework_criteria_preview(
+    phase: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(_get_current_user),
+):
+    """返回当前阶段最新上传要点的正文预览（过长时按与 LLM 注入相同的规则截断）。"""
+    ph = _normalize_review_phase(phase)
+    fv = _latest_framework_version(db, ph)
+    if not fv:
+        raise HTTPException(404, "该阶段尚未上传审核要点 Word")
+    raw = (fv.extracted_text or "").strip()
+    clipped = clip_criteria_text(raw)
+    return FrameworkCriteriaPreviewOut(
+        phase=ph,
+        version_seq=fv.version_seq,
+        original_filename=fv.original_filename or "",
+        created_at=fv.created_at,
+        username=_owner_display_name(db, getattr(fv, "created_by_user_id", None)),
+        text=clipped,
+        text_was_truncated=len(raw) > MAX_CRITERIA_CHARS,
+    )
 
 
 @app.post("/api/review-framework/{phase}/upload", response_model=FrameworkVersionOut)
@@ -887,14 +1128,14 @@ async def upload_framework_docx(
         shutil.copy2(dest, current_slot)
     except OSError:
         pass
-    return _framework_version_to_out(fv)
+    return _framework_version_to_out(db, fv)
 
 
-@app.get("/api/review-tasks", response_model=list[TaskOut])
-def list_tasks(
+@app.get("/api/review-tasks/metrics", response_model=ReviewTaskMetricsOut)
+def review_task_metrics(
     phase: Optional[str] = Query(
         None,
-        description="pre_review=方案预审 implementation=实施方案审核，不传则返回全部",
+        description="pre_review|implementation，不传则统计全部阶段",
     ),
     db: Session = Depends(get_db),
     current_user: User = Depends(_get_current_user),
@@ -902,8 +1143,65 @@ def list_tasks(
     q = db.query(ReviewTask).filter(ReviewTask.user_id == current_user.id)
     if phase in ("pre_review", "implementation"):
         q = q.filter(ReviewTask.phase == phase)
-    tasks = q.order_by(ReviewTask.id.desc()).all()
-    return [task_to_out(db, t, current_user.display_name) for t in tasks]
+    total = q.count()
+    completed = q.filter(ReviewTask.analysis_status == "reviewed").count()
+    return ReviewTaskMetricsOut(
+        total=total,
+        completed=completed,
+        in_progress=max(0, total - completed),
+    )
+
+
+@app.get("/api/review-tasks", response_model=PaginatedTaskListOut)
+def list_tasks(
+    phase: Optional[str] = Query(
+        None,
+        description="pre_review=方案预审 implementation=实施方案审核，不传则不限定阶段",
+    ),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, ge=1, le=100),
+    q: Optional[str] = Query(None, description="任务名称模糊搜索"),
+    review_status: Optional[str] = Query(
+        None,
+        description="in_progress|completed，不传则不限定状态",
+    ),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(_get_current_user),
+):
+    base = (
+        db.query(ReviewTask)
+        .options(joinedload(ReviewTask.user))
+        .filter(ReviewTask.user_id == current_user.id)
+    )
+    if phase in ("pre_review", "implementation"):
+        base = base.filter(ReviewTask.phase == phase)
+    if review_status == "completed":
+        base = base.filter(ReviewTask.analysis_status == "reviewed")
+    elif review_status == "in_progress":
+        base = base.filter(ReviewTask.analysis_status != "reviewed")
+    term = (q or "").strip()
+    if term:
+        like = f"%{term}%"
+        base = base.filter(
+            or_(
+                ReviewTask.name.ilike(like),
+                ReviewTask.project_key.ilike(like),
+                ReviewTask.version.ilike(like),
+            )
+        )
+    total = base.count()
+    tasks = (
+        base.order_by(ReviewTask.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+    return PaginatedTaskListOut(
+        items=[task_to_out(db, t, current_user.username) for t in tasks],
+        total=total,
+        page=page,
+        page_size=page_size,
+    )
 
 
 @app.post("/api/review-tasks", response_model=TaskOut)
@@ -913,7 +1211,15 @@ def create_task(
     current_user: User = Depends(_get_current_user),
 ):
     ph = body.phase if body.phase in ("pre_review", "implementation") else "implementation"
-    t = ReviewTask(name=body.name.strip(), user_id=current_user.id, phase=ph)
+    task_name = body.name.strip()
+    pkey, pver = resolve_project_identity(task_name, body.project_key, body.version)
+    t = ReviewTask(
+        name=task_name,
+        user_id=current_user.id,
+        phase=ph,
+        project_key=pkey,
+        version=pver,
+    )
     if body.llm_agent_id is not None:
         _require_agent(db, body.llm_agent_id, current_user)
         t.llm_agent_id = body.llm_agent_id
@@ -958,6 +1264,19 @@ def update_task(
     data = body.model_dump(exclude_unset=True)
     if "llm_agent_id" in data and data["llm_agent_id"] is not None:
         _require_agent(db, data["llm_agent_id"], current_user)
+    if {"name", "project_key", "version"} & data.keys():
+        final_name = (data.get("name") if "name" in data else t.name) or ""
+        final_name = final_name.strip()
+        explicit_key = data["project_key"] if "project_key" in data else None
+        explicit_ver = data["version"] if "version" in data else None
+        if "name" in data and "project_key" not in data and "version" not in data:
+            explicit_key = None
+            explicit_ver = None
+        pkey, pver = resolve_project_identity(final_name, explicit_key, explicit_ver)
+        data["project_key"] = pkey
+        data["version"] = pver
+        if "name" in data:
+            data["name"] = final_name
     for k, v in data.items():
         setattr(t, k, v)
     if "proposal_body" in data:
@@ -965,11 +1284,11 @@ def update_task(
             db.query(Attachment).filter_by(task_id=t.id).first()
         )
         if has_materials:
-            t.analysis_status = "parsing"
-            db.commit()
-            db.refresh(t)
-            _rebuild_task_documents(db, t)
-            t.analysis_status = "indexed"
+            db.query(DocumentChunk).filter_by(task_id=t.id).delete()
+            db.query(DocumentFile).filter_by(task_id=t.id).update({"parse_status": "pending"})
+            t.analysis_status = "draft"
+            t.doc_total_chars = None
+            t.doc_total_chunks = None
         else:
             db.query(DocumentChunk).filter_by(task_id=t.id).delete()
             db.query(DocumentFile).filter_by(task_id=t.id).delete()
@@ -1028,7 +1347,7 @@ def get_task_token_estimate(
     agent = None
     if getattr(task, "llm_agent_id", None):
         agent = db.query(LlmAgent).filter_by(id=task.llm_agent_id).first()
-    estimate = estimate_task_token_usage(db, task, load_framework(), agent)
+    estimate = estimate_task_token_usage(db, task, load_framework(_task_phase(task)), agent)
     return TaskTokenEstimateOut(
         task_id=estimate.task_id,
         parser_engine=estimate.parser_engine,
@@ -1067,22 +1386,31 @@ def get_task_token_estimate(
 
 @app.get("/api/review-costs/task-overview", response_model=list[TaskCostOverviewItemOut])
 def get_task_cost_overview(
+    task_ids: Optional[str] = Query(
+        None,
+        description="逗号分隔的任务 id；不传则返回当前用户全部任务的估算（兼容旧客户端）",
+    ),
     db: Session = Depends(get_db),
     current_user: User = Depends(_get_current_user),
 ):
-    tasks = (
-        db.query(ReviewTask)
-        .filter_by(user_id=current_user.id)
-        .order_by(ReviewTask.id.desc())
-        .all()
-    )
-    framework = load_framework()
+    qry = db.query(ReviewTask).filter(ReviewTask.user_id == current_user.id)
+    raw_ids = (task_ids or "").strip()
+    if raw_ids:
+        ids: list[int] = []
+        for part in raw_ids.split(","):
+            p = part.strip()
+            if p.isdigit():
+                ids.append(int(p))
+        if not ids:
+            return []
+        qry = qry.filter(ReviewTask.id.in_(ids))
+    tasks = qry.order_by(ReviewTask.id.desc()).all()
     items: list[TaskCostOverviewItemOut] = []
     for task in tasks:
         agent = None
         if getattr(task, "llm_agent_id", None):
             agent = db.query(LlmAgent).filter_by(id=task.llm_agent_id).first()
-        estimate = estimate_task_token_usage(db, task, framework, agent)
+        estimate = estimate_task_token_usage(db, task, load_framework(_task_phase(task)), agent)
         items.append(
             TaskCostOverviewItemOut(
                 task_id=task.id,
@@ -1105,10 +1433,10 @@ def get_task_cost_compare(
 ):
     task = _get_task_or_404(db, task_id, current_user)
     agents = db.query(LlmAgent).filter_by(user_id=current_user.id).order_by(LlmAgent.id.asc()).all()
-    framework = load_framework()
+    fw = load_framework(_task_phase(task))
     items: list[CostCompareItemOut] = []
     for agent in agents:
-        estimate = estimate_task_token_usage(db, task, framework, agent)
+        estimate = estimate_task_token_usage(db, task, fw, agent)
         items.append(
             CostCompareItemOut(
                 agent_id=agent.id,
@@ -1135,7 +1463,6 @@ def get_monthly_cost_summary(
     now = datetime.now(timezone.utc)
     month_prefix = now.astimezone().strftime("%Y-%m")
     tasks = db.query(ReviewTask).filter_by(user_id=current_user.id).all()
-    framework = load_framework()
     task_count = 0
     total_llm_tokens = 0
     low_usd = 0.0
@@ -1152,7 +1479,7 @@ def get_monthly_cost_summary(
         agent = None
         if getattr(task, "llm_agent_id", None):
             agent = db.query(LlmAgent).filter_by(id=task.llm_agent_id).first()
-        estimate = estimate_task_token_usage(db, task, framework, agent)
+        estimate = estimate_task_token_usage(db, task, load_framework(_task_phase(task)), agent)
         task_count += 1
         total_llm_tokens += estimate.total_llm_tokens
         low_usd += estimate.estimated_cost_low_usd or 0
@@ -1192,6 +1519,10 @@ def analyze_task_materials(
     task.analysis_status = "indexed"
     db.commit()
     db.refresh(task)
+    try:
+        ensure_task_memory_index(db, task)
+    except Exception:
+        pass
 
     files = (
         db.query(DocumentFile)
@@ -1272,23 +1603,34 @@ def run_issue_review(
     agent_id = body.agent_id if body.agent_id is not None else task.llm_agent_id
     if agent_id is None:
         raise HTTPException(400, "请先绑定默认智能体，或在请求中指定 agent_id")
-    if getattr(task, "analysis_status", "draft") not in {"indexed", "reviewed"} and not body.force:
-        raise HTTPException(400, "当前任务尚未完成材料解析，请先解析材料")
     agent = _require_agent(db, agent_id, current_user)
+    lock = _task_review_lock(task_id)
+    if not lock.acquire(blocking=False):
+        raise HTTPException(
+            409,
+            "该任务正在问题审查中，请勿重复点击。完整审查通常需要数分钟。",
+        )
     try:
+        _prepare_task_for_issue_review(db, task, force=body.force)
         run = run_issue_review_for_task(
             db,
             task,
-            load_framework(),
+            load_framework(_task_phase(task)),
             agent,
             body.dimension_ids,
             load_template_schema(),
         )
     except ValueError as e:
         raise HTTPException(422, str(e)) from e
+    except json.JSONDecodeError as e:
+        raise HTTPException(
+            422,
+            "大模型返回的内容无法解析为 JSON，请重试问题审查；若仍失败，可换模型或缩短材料。",
+        ) from e
     except httpx.HTTPStatusError as e:
-        detail = e.response.text[:500] if e.response is not None else str(e)
-        raise HTTPException(502, f"大模型接口返回错误：{detail}") from e
+        resp = e.response
+        snippet = (resp.text[:500] if resp is not None else "") or str(e)
+        raise HTTPException(502, f"大模型接口返回错误：{snippet}") from e
     except Exception as e:
         failed_run = ReviewRun(
             task_id=task.id,
@@ -1302,7 +1644,20 @@ def run_issue_review(
         db.add(failed_run)
         task.analysis_status = "failed"
         db.commit()
-        raise HTTPException(502, f"问题审查失败：{e!s}") from e
+        detail = str(e).strip()
+        if detail in {"403 Forbidden", "403", "Forbidden"}:
+            detail = (
+                "大模型接口返回 403（拒绝访问），常见于连续重复点击或短时限流。"
+                "请等待 30～60 秒后只点一次「问题审查」；并确认智能体为 deepseek-v4-flash 且 Key 已保存。"
+            )
+        elif "HTTP 403" not in detail and "403" in detail and len(detail) < 40:
+            detail = (
+                "大模型接口返回 403（拒绝访问），常见于连续重复点击或短时限流。"
+                "请等待 30～60 秒后只点一次「问题审查」；并确认智能体为 deepseek-v4-flash 且 Key 已保存。"
+            )
+        raise HTTPException(502, f"问题审查失败：{detail}") from e
+    finally:
+        lock.release()
     return run
 
 
@@ -1423,226 +1778,6 @@ def update_review_issue(
     return issue
 
 
-@app.get("/api/review-tasks/{task_id}/scores", response_model=list[ScoreOut])
-def get_scores(
-    task_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(_get_current_user),
-):
-    _get_task_or_404(db, task_id, current_user)
-    init_scores_for_task(db, task_id)
-    return (
-        db.query(IndicatorScore)
-        .filter_by(task_id=task_id)
-        .order_by(IndicatorScore.indicator_id)
-        .all()
-    )
-
-
-@app.put("/api/review-tasks/{task_id}/scores", response_model=ScoreOut)
-def upsert_score(
-    task_id: int,
-    body: ScoreUpsert,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(_get_current_user),
-):
-    _get_task_or_404(db, task_id, current_user)
-    r = (
-        db.query(IndicatorScore)
-        .filter_by(task_id=task_id, indicator_id=body.indicator_id)
-        .first()
-    )
-    if not r:
-        r = IndicatorScore(task_id=task_id, indicator_id=body.indicator_id)
-        db.add(r)
-    r.score = body.score
-    r.notes = body.notes
-    db.commit()
-    db.refresh(r)
-    return r
-
-
-@app.post("/api/review-tasks/{task_id}/ai-suggest", response_model=AiSuggestOut)
-def ai_suggest_scores(
-    task_id: int,
-    body: AiSuggestBody,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(_get_current_user),
-):
-    t = _get_task_or_404(db, task_id, current_user)
-    agent = _resolve_agent_for_task(db, t, body.agent_id, current_user)
-    proposal = (t.proposal_body or "").strip()
-    atts, attachment_evidence = _collect_task_materials(db, task_id, proposal)
-    names = [x.original_name for x in atts]
-    fw = load_framework()
-    try:
-        result = run_ai_suggest(agent, fw, t.name, proposal, names, attachment_evidence)
-    except ValueError as e:
-        raise HTTPException(422, str(e)) from e
-    except httpx.HTTPStatusError as e:
-        detail = e.response.text[:500] if e.response is not None else str(e)
-        raise HTTPException(502, f"大模型接口返回错误：{detail}") from e
-    except Exception as e:
-        raise HTTPException(502, f"调用大模型失败：{e!s}") from e
-    return AiSuggestOut(
-        items=[AiScoreItemOut(**x.model_dump()) for x in result.items],
-        raw_excerpt=result.raw_excerpt,
-        agent_id=agent.id,
-        agent_name=agent.name,
-    )
-
-
-@app.post("/api/review-tasks/{task_id}/ai-report", response_model=AiReportOut)
-def ai_full_report(
-    task_id: int,
-    body: AiSuggestBody,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(_get_current_user),
-):
-    t = _get_task_or_404(db, task_id, current_user)
-    agent = _resolve_agent_for_task(db, t, body.agent_id, current_user)
-    proposal = (t.proposal_body or "").strip()
-    atts, attachment_evidence = _collect_task_materials(db, task_id, proposal)
-    names = [x.original_name for x in atts]
-    fw = load_framework()
-    try:
-        result = run_ai_report(agent, fw, t.name, proposal, names, attachment_evidence)
-    except ValueError as e:
-        raise HTTPException(422, str(e)) from e
-    except httpx.HTTPStatusError as e:
-        detail = e.response.text[:500] if e.response is not None else str(e)
-        raise HTTPException(502, f"大模型接口返回错误：{detail}") from e
-    except Exception as e:
-        raise HTTPException(502, f"调用大模型失败：{e!s}") from e
-    return AiReportOut(
-        items=[AiReportItemOut(**x.model_dump()) for x in result.items],
-        conclusion=result.conclusion,
-        highlights=result.highlights,
-        issues=result.issues,
-        raw_excerpt=result.raw_excerpt,
-        agent_id=agent.id,
-        agent_name=agent.name,
-    )
-
-
-@app.post("/api/review-tasks/{task_id}/ai-review", response_model=AiReviewRunOut)
-def ai_review_and_apply(
-    task_id: int,
-    body: AiSuggestBody,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(_get_current_user),
-):
-    """主流程接口：直接生成完整评审并写入任务，前端只需“一键开始评审”。
-    """
-    t = _get_task_or_404(db, task_id, current_user)
-    agent = _resolve_agent_for_task(db, t, body.agent_id, current_user)
-    proposal = (t.proposal_body or "").strip()
-    atts, attachment_evidence = _collect_task_materials(db, task_id, proposal)
-    names = [x.original_name for x in atts]
-    fw = load_framework()
-    try:
-        result = run_ai_report(agent, fw, t.name, proposal, names, attachment_evidence)
-    except ValueError as e:
-        raise HTTPException(422, str(e)) from e
-    except httpx.HTTPStatusError as e:
-        detail = e.response.text[:500] if e.response is not None else str(e)
-        raise HTTPException(502, f"大模型接口返回错误：{detail}") from e
-    except Exception as e:
-        raise HTTPException(502, f"调用大模型失败：{e!s}") from e
-
-    _apply_report_result(db, task_id, t, result)
-    report = build_overall_report(db, t)
-    return AiReviewRunOut(
-        task=task_to_out(db, t, current_user.display_name),
-        report=report,
-        raw_excerpt=result.raw_excerpt,
-        agent_id=agent.id,
-        agent_name=agent.name,
-    )
-
-
-@app.post("/api/review-tasks/{task_id}/ai-report/apply", response_model=TaskOut)
-def apply_ai_report(
-    task_id: int,
-    body: AiReportApplyBody,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(_get_current_user),
-):
-    t = _get_task_or_404(db, task_id, current_user)
-    result = type(
-        "AppliedReport",
-        (),
-        {
-            "conclusion": body.conclusion,
-            "highlights": body.highlights,
-            "issues": body.issues,
-            "items": body.items,
-        },
-    )()
-    _apply_report_result(db, task_id, t, result)
-    return task_to_out(db, t, current_user.display_name)
-
-
-@app.get("/api/review-tasks/{task_id}/report", response_model=OverallReport)
-def get_report(
-    task_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(_get_current_user),
-):
-    t = _get_task_or_404(db, task_id, current_user)
-    return build_overall_report(db, t)
-
-
-@app.get("/api/review-tasks/{task_id}/report/download")
-def download_report(
-    task_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(_get_current_user),
-):
-    t = _get_task_or_404(db, task_id, current_user)
-    report = build_overall_report(db, t)
-    html_doc = build_report_html(report)
-    raw = html_doc.encode("utf-8")
-    fname = f"评审报告-{t.name}.html"
-    disp = "attachment; filename*=UTF-8''" + quote(fname)
-    return Response(
-        content=raw,
-        media_type="text/html; charset=utf-8",
-        headers={"Content-Disposition": disp},
-    )
-
-
-@app.get("/api/review-tasks/{task_id}/report/word")
-def download_report_word(
-    task_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(_get_current_user),
-):
-    """下载 Word 版评审报告（.docx），便于本地编辑或另存为 PDF。"""
-    try:
-        from .report_docx import build_report_docx_bytes
-    except ImportError as e:
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "未安装 Word 报告依赖（需 python-docx 与 lxml）。"
-                "在 backend 目录执行：python -m pip install -U pip && pip install -r requirements.txt"
-            ),
-        ) from e
-    t = _get_task_or_404(db, task_id, current_user)
-    report = build_overall_report(db, t)
-    raw = build_report_docx_bytes(report)
-    fname = f"评审报告-{t.name}.docx"
-    disp = "attachment; filename*=UTF-8''" + quote(fname)
-    return Response(
-        content=raw,
-        media_type=(
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        ),
-        headers={"Content-Disposition": disp},
-    )
-
-
 @app.post("/api/review-tasks/{task_id}/attachments", response_model=AttachmentOut)
 async def upload_attachment(
     task_id: int,
@@ -1655,6 +1790,8 @@ async def upload_attachment(
     dest_dir = UPLOAD_DIR / str(task_id)
     dest_dir.mkdir(parents=True, exist_ok=True)
     safe_name = Path(file.filename or "upload").name
+    if Path(safe_name).suffix.lower() != ".docx":
+        raise HTTPException(400, "仅支持 .docx 文件")
     dest = dest_dir / safe_name
     counter = 1
     while dest.exists():
@@ -1681,11 +1818,10 @@ async def upload_attachment(
     )
     db.add(doc)
     db.commit()
-    task.analysis_status = "parsing"
-    db.commit()
-    db.refresh(task)
-    _rebuild_task_documents(db, task)
-    task.analysis_status = "indexed"
+    db.query(DocumentChunk).filter_by(task_id=task.id).delete()
+    task.analysis_status = "draft"
+    task.doc_total_chars = None
+    task.doc_total_chunks = None
     db.commit()
     return att
 
@@ -1750,11 +1886,11 @@ def delete_attachment(
         db.query(Attachment).filter_by(task_id=task_id).first()
     )
     if has_materials:
-        task.analysis_status = "parsing"
-        db.commit()
-        db.refresh(task)
-        _rebuild_task_documents(db, task)
-        task.analysis_status = "indexed"
+        db.query(DocumentChunk).filter_by(task_id=task.id).delete()
+        db.query(DocumentFile).filter_by(task_id=task.id).update({"parse_status": "pending"})
+        task.analysis_status = "draft"
+        task.doc_total_chars = None
+        task.doc_total_chunks = None
     else:
         db.query(DocumentChunk).filter_by(task_id=task.id).delete()
         db.query(DocumentFile).filter_by(task_id=task.id).delete()
@@ -1763,3 +1899,111 @@ def delete_attachment(
         task.doc_total_chunks = None
     db.commit()
     return {"ok": True}
+
+
+# --- 方案记忆库 / 跨项目比对（全库，不按用户过滤） ---
+
+
+@app.get("/api/memory/library", response_model=MemoryLibraryOut)
+def memory_library(
+    phase: Optional[str] = Query(None, description="pre_review | implementation"),
+    q: Optional[str] = Query(None, description="任务名 / 项目标识 / 摘要 / 关键词"),
+    limit: int = Query(200, ge=1, le=500),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(_get_current_user),
+):
+    del current_user
+    rows = list_ready_profiles(db, phase=phase, q=q, limit=limit)
+    items = [_memory_profile_to_out(task, profile) for task, profile in rows]
+    return MemoryLibraryOut(items=items, total=len(items))
+
+
+@app.get("/api/memory/tasks/{task_id}/profile", response_model=MemoryProfileOut)
+def get_memory_profile(
+    task_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(_get_current_user),
+):
+    del current_user
+    task = _get_task_any_or_404(db, task_id)
+    profile = db.query(ProjectMemoryProfile).filter_by(task_id=task_id).first()
+    if not profile:
+        profile = build_profile_from_task(db, task)
+    return _memory_profile_to_out(task, profile)
+
+
+@app.post("/api/memory/tasks/{task_id}/index", response_model=MemoryProfileOut)
+def index_memory_profile(
+    task_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(_get_current_user),
+):
+    del current_user
+    task = _get_task_any_or_404(db, task_id)
+    profile = build_profile_from_task(db, task)
+    return _memory_profile_to_out(task, profile)
+
+
+@app.get("/api/memory/tasks/{task_id}/similar", response_model=MemorySimilarListOut)
+def memory_similar_tasks(
+    task_id: int,
+    limit: int = Query(10, ge=1, le=30),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(_get_current_user),
+):
+    del current_user
+    task = _get_task_any_or_404(db, task_id)
+    similar = find_similar_tasks(db, task, limit=limit)
+    items = [
+        MemorySimilarItemOut(
+            task_id=item["task"].id,
+            task_name=item["task"].name,
+            project_key=item["profile"].project_key,
+            version=item["profile"].version,
+            phase=item["task"].phase,
+            similarity_score=item["similarity_score"],
+            overlap_keywords=item["overlap_keywords"],
+            summary_text=(item["profile"].summary_text or "")[:800] or None,
+        )
+        for item in similar
+    ]
+    return MemorySimilarListOut(
+        source_task_id=task.id,
+        source_project_key=resolve_task_project_key(task),
+        items=items,
+    )
+
+
+@app.post("/api/memory/compare", response_model=MemoryCompareOut)
+def memory_compare_tasks(
+    body: MemoryCompareBody,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(_get_current_user),
+):
+    del current_user
+    source = _get_task_any_or_404(db, body.source_task_id)
+    target = _get_task_any_or_404(db, body.target_task_id)
+    result = compare_tasks(db, source, target)
+    sp: ProjectMemoryProfile = result["source_profile"]
+    tp: ProjectMemoryProfile = result["target_profile"]
+    return MemoryCompareOut(
+        comparable=bool(result.get("comparable")),
+        message=str(result.get("message") or ""),
+        similarity_score=float(result.get("similarity_score") or 0),
+        duplicate_risk=str(result.get("duplicate_risk") or "none"),
+        overlap_keywords=list(result.get("overlap_keywords") or []),
+        findings=list(result.get("findings") or []),
+        source=_memory_profile_to_out(source, sp),
+        target=_memory_profile_to_out(target, tp),
+        chunk_pairs=[MemoryChunkPairOut(**pair) for pair in result.get("chunk_pairs") or []],
+    )
+
+
+@app.post("/api/memory/reindex", response_model=MemoryReindexOut)
+def memory_reindex_all(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(_get_current_user),
+):
+    del current_user
+    count = reindex_all_ready_tasks(db)
+    return MemoryReindexOut(indexed_count=count)

@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import html
-from datetime import datetime, timezone
 from io import BytesIO
 
 from docx import Document
-from docx.shared import Pt
 
+from .docx_helpers import apply_global_yahei_font, format_now_beijing
 from .models import ReviewIssue, ReviewTask
 
 
@@ -104,7 +103,7 @@ def build_issue_report_html(task: ReviewTask, issues: list[ReviewIssue]) -> str:
 <body>
   <div class="sheet">
     <h1>{html.escape(task.name)}</h1>
-    <div class="meta">项目方案智能审查意见书 · 生成时间（UTC）：{html.escape(datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"))}</div>
+    <div class="meta">项目方案智能审查意见书 · 生成时间（北京时间）：{html.escape(format_now_beijing())}</div>
     <h2>总体判断</h2>
     <div class="card" style="white-space:pre-wrap">{html.escape(overall)}</div>
     <div class="summary">
@@ -123,13 +122,11 @@ def build_issue_report_html(task: ReviewTask, issues: list[ReviewIssue]) -> str:
 
 def build_issue_report_docx_bytes(task: ReviewTask, issues: list[ReviewIssue]) -> bytes:
     doc = Document()
-    normal = doc.styles["Normal"]
-    if normal.font is not None:
-        normal.font.size = Pt(11)
+    apply_global_yahei_font(doc, body_pt=11)
 
     doc.add_heading(task.name, level=0)
-    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
-    doc.add_paragraph(f"项目方案智能审查意见书 · 生成时间（UTC）：{ts}")
+    ts = format_now_beijing()
+    doc.add_paragraph(f"项目方案智能审查意见书 · 生成时间（北京时间）：{ts}")
 
     doc.add_heading("总体判断", level=1)
     doc.add_paragraph(task.overall_assessment or "（尚未生成总体判断）")

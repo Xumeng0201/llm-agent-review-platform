@@ -2,8 +2,6 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Navigate, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   IconDownload,
-  IconFile,
-  IconList,
 } from "@douyinfe/semi-icons";
 import { Button, Card, Checkbox, Input, Select, Space, Tag, TextArea, Typography } from "@douyinfe/semi-ui";
 import {
@@ -24,10 +22,9 @@ import {
   listDocumentChunks,
   listReviewIssues,
   runIssueReview,
-  updateTask,
   updateReviewIssue,
-  uploadAttachment,
 } from "../api";
+import { pageShellDetail, pageShellSoft, formFieldRadius, techFieldSurface, techPrimaryButton } from "../theme/pageChrome";
 import type {
   AnalysisStatusResult,
   Attachment,
@@ -47,10 +44,10 @@ type TaskStep = "materials" | "result" | "report";
 
 const STEP_ORDER: TaskStep[] = ["materials", "result", "report"];
 
-const STEP_DEF: { key: TaskStep; stepLabel: string; title: string }[] = [
-  { key: "materials", stepLabel: "第一步", title: "上传方案材料" },
-  { key: "result", stepLabel: "第二步", title: "查看评审结果" },
-  { key: "report", stepLabel: "第三步", title: "编辑并下载报告" },
+const STEP_DEF: { key: TaskStep; title: string }[] = [
+  { key: "materials", title: "解析材料" },
+  { key: "result", title: "查看评审结果" },
+  { key: "report", title: "编辑并下载报告" },
 ];
 
 function parseTaskStep(s: string | undefined): TaskStep | null {
@@ -58,34 +55,6 @@ function parseTaskStep(s: string | undefined): TaskStep | null {
   if (s === "plan") return "materials";
   return null;
 }
-
-const shellCardStyle = {
-  width: "100%" as const,
-  borderRadius: 24,
-  border: "1px solid rgba(255, 255, 255, 0.9)",
-  background: "linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(247, 248, 255, 0.88))",
-  boxShadow: "0 24px 60px rgba(111, 123, 168, 0.14)",
-} as const;
-
-const softTechCardStyle = {
-  width: "100%" as const,
-  borderRadius: 22,
-  border: "1px solid rgba(226, 232, 240, 0.95)",
-  background: "linear-gradient(180deg, rgba(255, 255, 255, 0.86), rgba(248, 250, 252, 0.82))",
-} as const;
-
-const techInputStyle = {
-  background: "rgba(255, 255, 255, 0.9)",
-  border: "1px solid rgba(203, 213, 225, 0.95)",
-  color: "#0f172a",
-} as const;
-
-const techPrimaryBtn = {
-  borderRadius: 999,
-  background: "linear-gradient(90deg, #20d2cc, #2c7ef8)",
-  border: "none",
-  boxShadow: "0 12px 28px rgba(35, 157, 226, 0.28)",
-} as const;
 
 function formatMoney(value: number | null | undefined, currency: "USD" | "CNY") {
   if (value == null || Number.isNaN(value)) return "—";
@@ -109,7 +78,6 @@ export default function TaskDetail() {
   const [fw, setFw] = useState<Framework | null>(null);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [agents, setAgents] = useState<LlmAgent[]>([]);
-  const [proposalDraft, setProposalDraft] = useState("");
   const [analysis, setAnalysis] = useState<AnalysisStatusResult | null>(null);
   const [tokenEstimate, setTokenEstimate] = useState<TaskTokenEstimate | null>(null);
   const [parserCapability, setParserCapability] = useState<ParserCapability | null>(null);
@@ -130,7 +98,6 @@ export default function TaskDetail() {
   const [pickAgentId, setPickAgentId] = useState<string | number | undefined>(undefined);
   const [err, setErr] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
   const [reviewBusy, setReviewBusy] = useState(false);
   const [wordDownloading, setWordDownloading] = useState(false);
@@ -152,11 +119,11 @@ export default function TaskDetail() {
   const loadAll = useCallback(async () => {
     if (!Number.isFinite(taskId)) return;
     setErr(null);
-    const [taskRes, frameworkRes, attachmentRes, agentRes, analysisRes, issueRes, tokenRes, parserRes, compareRes] = await Promise.all([
-      getTask(taskId),
-      fetchFramework(),
+    const taskRes = await getTask(taskId);
+    const [frameworkRes, attachmentRes, agentRes, analysisRes, issueRes, tokenRes, parserRes, compareRes] = await Promise.all([
+      fetchFramework(taskRes.phase),
       listAttachments(taskId),
-      listAgents(),
+      listAgents({ page: 1, page_size: 200 }).then((b) => b.items),
       getAnalysisStatus(taskId).catch(() => null),
       listReviewIssues(taskId).catch(() => null),
       getTaskTokenEstimate(taskId).catch(() => null),
@@ -173,7 +140,6 @@ export default function TaskDetail() {
     setParserCapability(parserRes);
     setCostCompare(compareRes);
     await loadChunks(chunkOffset).catch(() => setChunks([]));
-    setProposalDraft(taskRes.proposal_body ?? "");
     setPickAgentId(taskRes.llm_agent_id ?? agentRes[0]?.id ?? undefined);
   }, [taskId]);
 
@@ -206,7 +172,7 @@ export default function TaskDetail() {
 
   if (!Number.isFinite(taskId)) {
     return (
-      <Card bordered={false} style={shellCardStyle}>
+      <Card bordered={false} style={pageShellDetail}>
         <Paragraph style={{ color: "rgba(51, 65, 85, 0.88)" }}>无效的任务 ID。</Paragraph>
       </Card>
     );
@@ -217,62 +183,6 @@ export default function TaskDetail() {
   }
 
   const step = stepFromUrl;
-
-  async function saveMaterialsAndPrompt() {
-    if (!task) return;
-    setSaving(true);
-    setErr(null);
-    setMsg(null);
-    try {
-      const next = await updateTask(task.id, {
-        proposal_body: proposalDraft,
-        llm_agent_id: task.llm_agent_id ?? (pickAgentId === undefined || pickAgentId === "" ? null : Number(pickAgentId)),
-      });
-      setTask(next);
-      const res = await getAnalysisStatus(task.id).catch(() => null);
-      setAnalysis(res);
-      setTokenEstimate(await getTaskTokenEstimate(task.id).catch(() => null));
-      setCostCompare(await getTaskCostCompare(task.id).catch(() => []));
-      setChunkOffset(0);
-      setChunks(await listDocumentChunks(task.id, { limit: chunkPageSize, offset: 0 }).catch(() => []));
-      setMsg("方案说明已保存，系统已同步更新解析结果。");
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : "保存失败");
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  async function onFileSelected(files: FileList | null) {
-    if (!files?.length) return;
-    setErr(null);
-    setMsg(null);
-    try {
-      for (const file of Array.from(files)) {
-        await uploadAttachment(taskId, file, "项目方案");
-      }
-      setAttachments(await listAttachments(taskId));
-      const res = await getAnalysisStatus(taskId).catch(() => null);
-      setAnalysis(res);
-      setTokenEstimate(await getTaskTokenEstimate(taskId).catch(() => null));
-      setCostCompare(await getTaskCostCompare(taskId).catch(() => []));
-      setChunkOffset(0);
-      setChunks(await listDocumentChunks(taskId, { limit: chunkPageSize, offset: 0 }).catch(() => []));
-      setTask((current) =>
-        current && res
-          ? {
-              ...current,
-              analysis_status: res.analysis_status,
-              doc_total_chars: res.doc_total_chars,
-              doc_total_chunks: res.doc_total_chunks,
-            }
-          : current
-      );
-      setMsg("方案文件已上传，系统已自动解析材料。");
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : "上传失败");
-    }
-  }
 
   async function onDeleteAttachment(attachmentId: number, filename: string) {
     if (!confirm(`确定删除已上传材料「${filename}」？`)) return;
@@ -318,7 +228,7 @@ export default function TaskDetail() {
   }
 
   async function triggerIssueReview() {
-    if (!Number.isFinite(taskId)) return;
+    if (!Number.isFinite(taskId) || reviewBusy) return;
     setReviewBusy(true);
     setErr(null);
     setMsg(null);
@@ -332,11 +242,15 @@ export default function TaskDetail() {
       setTask((current) =>
         current ? { ...current, analysis_status: "reviewing" } : current
       );
-      setMsg("问题审查任务已提交。");
+      setMsg("问题审查已完成，可查看问题清单并下载意见书。");
       setIssueList(await listReviewIssues(taskId).catch(() => null));
+      setTask((current) =>
+        current ? { ...current, analysis_status: "reviewed", review_status: "completed" } : current
+      );
       nav(`/tasks/${taskId}/result`);
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "发起问题审查失败");
+      const raw = e instanceof Error ? e.message : "发起问题审查失败";
+      setErr(raw.length > 200 ? raw.slice(0, 200) + "…" : raw);
     } finally {
       setReviewBusy(false);
     }
@@ -404,7 +318,7 @@ export default function TaskDetail() {
 
   if (!task || !fw) {
     return (
-      <Card bordered={false} style={shellCardStyle}>
+      <Card bordered={false} style={pageShellDetail}>
         <Paragraph style={{ color: "rgba(51, 65, 85, 0.88)" }}>加载中…</Paragraph>
       </Card>
     );
@@ -486,7 +400,7 @@ export default function TaskDetail() {
             background: "rgba(250, 204, 21, 0.28)",
             color: "#0f172a",
             padding: "0 2px",
-            borderRadius: 4,
+            borderRadius: formFieldRadius,
           }}
         >
           {part}
@@ -509,31 +423,39 @@ export default function TaskDetail() {
     nav(`/tasks/${taskId}/materials`);
   }
 
-  const stepNavBtn = (key: TaskStep, icon: React.ReactNode) => {
+  const stepNavBtn = (key: TaskStep) => {
     const def = STEP_DEF.find((s) => s.key === key)!;
+    const index = STEP_ORDER.indexOf(key);
+    const isActive = step === key;
+    const isDone = stepIndex > index;
     return (
       <Button
         key={key}
-        className={step === key ? "taskdetail-stepbtn taskdetail-stepbtn-active" : "taskdetail-stepbtn"}
-        icon={icon}
-        theme={step === key ? "solid" : "light"}
-        type={step === key ? "primary" : "tertiary"}
+        className={[
+          "taskdetail-stepbtn",
+          isActive ? "taskdetail-stepbtn-active" : "",
+          isDone ? "taskdetail-stepbtn-done" : "",
+        ]
+          .filter(Boolean)
+          .join(" ")}
+        theme="light"
+        type="tertiary"
         onClick={() => nav(`/tasks/${task.id}/${key}`)}
         style={{
           flex: 1,
           minWidth: 0,
           height: "auto",
-          paddingTop: 10,
-          paddingBottom: 10,
+          paddingTop: 14,
+          paddingBottom: 14,
           whiteSpace: "normal",
-          textAlign: "center",
+          textAlign: "left",
         }}
       >
-        <span style={{ display: "block", fontSize: 14, lineHeight: "20px", fontWeight: 600 }}>
-          {def.stepLabel}：
-        </span>
-        <span style={{ display: "block", fontSize: 14, lineHeight: "20px", fontWeight: 400, marginTop: 2, opacity: 0.88 }}>
-          {def.title}
+        <span className="taskdetail-stepbtn-inner">
+          <span className="taskdetail-stepbtn-badge">{index + 1}</span>
+          <span className="taskdetail-stepbtn-copy">
+            <span className="taskdetail-stepbtn-title">{def.title}</span>
+          </span>
         </span>
       </Button>
     );
@@ -543,68 +465,89 @@ export default function TaskDetail() {
     <Space vertical spacing="loose" style={{ width: "100%", alignItems: "stretch" }}>
       <Card
         bordered={false}
-        style={shellCardStyle}
-        className="tech-enter tech-enter-1"
-        bodyStyle={{ padding: "24px 24px 26px" }}
-        title={<Title heading={4} style={{ color: "#0f172a" }}>{task.name}</Title>}
-        headerExtraContent={
+        style={pageShellDetail}
+        className="tech-enter tech-enter-1 taskdetail-page"
+        bodyStyle={{ padding: 0 }}
+      >
+        <div
+          style={{
+            boxSizing: "border-box",
+            padding: "18px 24px",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            flexWrap: "wrap",
+            gap: 14,
+          }}
+        >
+          <Space spacing={10} wrap align="center">
+            <Title heading={4} style={{ color: "#0f172a", margin: 0 }}>
+              {task.name}
+            </Title>
+            <Tag color="blue" size="large">
+              {task.phase === "pre_review" ? "方案预审" : "实施方案审核"}
+            </Tag>
+            {task.project_key?.trim() ? (
+              <Tag size="large" style={{ color: "#334155", background: "rgba(241, 245, 249, 0.95)" }}>
+                项目：{task.project_key.trim()}
+              </Tag>
+            ) : null}
+            {task.version?.trim() ? (
+              <Tag size="large" style={{ color: "#334155", background: "rgba(241, 245, 249, 0.95)" }}>
+                版本：{task.version.trim()}
+              </Tag>
+            ) : null}
+          </Space>
           <Button
             theme="light"
             type="tertiary"
             onClick={() =>
-              nav(
-                task.phase === "pre_review" ? "/tasks/pre-review" : "/tasks/implementation"
-              )
+              nav(task.phase === "pre_review" ? "/tasks/pre-review" : "/tasks/implementation")
             }
             style={{
               color: "#334155",
               border: "1px solid rgba(203, 213, 225, 0.95)",
               background: "rgba(255, 255, 255, 0.82)",
-              borderRadius: 999,
+              borderRadius: formFieldRadius,
             }}
           >
             返回列表
           </Button>
-        }
-      >
-      </Card>
-
-      {err ? <div className="tech-alert tech-alert-danger" style={{ width: "100%" }}>{err}</div> : null}
-      {msg ? (
-        <div
-          style={{
-            padding: "10px 12px",
-            borderRadius: 12,
-            width: "100%",
-            background: "rgba(18, 74, 57, 0.58)",
-            border: "1px solid rgba(147, 251, 207, 0.18)",
-            color: "#d8ffea",
-            fontSize: 14,
-          }}
-        >
-          {msg}
         </div>
-      ) : null}
 
-      <div className="taskdetail-stepbar tech-enter tech-enter-2">
-        {stepNavBtn("materials", <IconFile />)}
-        {stepNavBtn("result", <IconList />)}
-        {stepNavBtn("report", <IconDownload />)}
-      </div>
+        {err ? <div className="tech-alert tech-alert-danger" style={{ width: "100%", margin: "0 24px 16px", maxWidth: "calc(100% - 48px)" }}>{err}</div> : null}
+        {msg ? (
+          <div
+            style={{
+              padding: "10px 12px",
+              borderRadius: formFieldRadius,
+              margin: "0 24px 16px",
+              maxWidth: "calc(100% - 48px)",
+              background: "rgba(18, 74, 57, 0.58)",
+              border: "1px solid rgba(147, 251, 207, 0.18)",
+              color: "#d8ffea",
+              fontSize: 14,
+            }}
+          >
+            {msg}
+          </div>
+        ) : null}
 
+        <div className="taskdetail-stepbar tech-enter tech-enter-2">
+          {stepNavBtn("materials")}
+          {stepNavBtn("result")}
+          {stepNavBtn("report")}
+        </div>
+
+        <div style={{ padding: 24 }}>
       {step === "materials" ? (
-        <Card
-          bordered={false}
-          style={shellCardStyle}
-          className="tech-enter tech-enter-3"
-          bodyStyle={{ padding: 24 }}
-          title={<Title heading={5} style={{ color: "#0f172a" }}>方案材料</Title>}
-        >
+        <>
+          <Title heading={5} style={{ color: "#0f172a", margin: "0 0 16px" }}>解析材料</Title>
           <div
             style={{
               marginBottom: 20,
               padding: 16,
-              borderRadius: 18,
+              borderRadius: formFieldRadius,
               border: "1px solid rgba(226, 232, 240, 0.95)",
               background: "rgba(248, 250, 252, 0.9)",
             }}
@@ -619,7 +562,7 @@ export default function TaskDetail() {
                 </Paragraph>
               </div>
               <Button loading={analyzing} onClick={() => void runAnalysis()}>
-                {analyzing ? "解析中…" : "重新解析材料"}
+                {analyzing ? "解析中…" : analysis?.doc_total_chunks || task.doc_total_chunks ? "重新解析材料" : "开始解析材料"}
               </Button>
             </Space>
             {analysis?.files?.length ? (
@@ -632,7 +575,7 @@ export default function TaskDetail() {
                       style={{
                         width: "100%",
                         padding: "10px 12px",
-                        borderRadius: 14,
+                        borderRadius: formFieldRadius,
                         border: "1px solid rgba(226, 232, 240, 0.92)",
                         background: "rgba(255, 255, 255, 0.78)",
                       }}
@@ -660,7 +603,7 @@ export default function TaskDetail() {
               <div
                 style={{
                   padding: "12px 14px",
-                  borderRadius: 14,
+                  borderRadius: formFieldRadius,
                   border: "1px solid rgba(226, 232, 240, 0.92)",
                   background: "rgba(255,255,255,0.8)",
                 }}
@@ -699,7 +642,7 @@ export default function TaskDetail() {
                     <>，当前还没有匹配到内置官方价目表，所以暂时只显示 token，不显示费用。</>
                   )}
                 </Paragraph>
-                <div className="taskhome-stat-row" style={{ marginTop: 14 }}>
+                <div className="taskhome-stat-row taskhome-stat-row--4" style={{ marginTop: 14 }}>
                   <div className="taskhome-stat-card">
                     <Text className="taskhome-stat-label">本地切块估算</Text>
                     <div className="taskhome-stat-value">{tokenEstimate?.local_chunk_tokens ?? 0}</div>
@@ -718,7 +661,7 @@ export default function TaskDetail() {
                   </div>
                 </div>
                 {tokenEstimate?.estimated_cost_low_usd != null && tokenEstimate?.estimated_cost_high_usd != null ? (
-                  <div className="taskhome-stat-row" style={{ marginTop: 14 }}>
+                  <div className="taskhome-stat-row taskhome-stat-row--4" style={{ marginTop: 14 }}>
                     <div className="taskhome-stat-card">
                       <Text className="taskhome-stat-label">费用下限（USD）</Text>
                       <div className="taskhome-stat-value" style={{ fontSize: 24 }}>
@@ -755,7 +698,7 @@ export default function TaskDetail() {
                           style={{
                             width: "100%",
                             padding: "8px 10px",
-                            borderRadius: 12,
+                            borderRadius: formFieldRadius,
                             background: "rgba(248,250,252,0.92)",
                             border: "1px solid rgba(226,232,240,0.92)",
                             color: "#334155",
@@ -803,7 +746,7 @@ export default function TaskDetail() {
                           style={{
                             width: "100%",
                             padding: "10px 12px",
-                            borderRadius: 14,
+                            borderRadius: formFieldRadius,
                             border: selectedAgent?.id === item.agent_id
                               ? "1px solid rgba(59, 130, 246, 0.92)"
                               : "1px solid rgba(226, 232, 240, 0.92)",
@@ -855,7 +798,7 @@ export default function TaskDetail() {
                         style={{
                           width: "100%",
                           padding: "12px 14px",
-                          borderRadius: 14,
+                          borderRadius: formFieldRadius,
                           border: chunk.id === focusedChunk?.id ? "1px solid rgba(59, 130, 246, 0.9)" : "1px solid rgba(226, 232, 240, 0.92)",
                           background: chunk.id === focusedChunk?.id ? "rgba(239, 246, 255, 0.9)" : "rgba(255, 255, 255, 0.82)",
                         }}
@@ -917,17 +860,10 @@ export default function TaskDetail() {
           </div>
 
           <div style={{ marginBottom: 20 }}>
-            <Text strong style={{ display: "block", marginBottom: 8 }}>上传方案文件</Text>
-            <div className="taskdetail-upload-box">
-              <input type="file" multiple onChange={(e) => void onFileSelected(e.target.files)} style={{ fontSize: 14, color: "#334155" }} />
-            </div>
-          </div>
-
-          <div style={{ marginBottom: 20 }}>
-            <Text strong style={{ display: "block", marginBottom: 8 }}>已上传材料</Text>
+            <Text strong style={{ display: "block", marginBottom: 8 }}>已上传方案文件</Text>
             <ul style={{ margin: 0, paddingLeft: 20, color: "rgba(71, 85, 105, 0.88)" }}>
               {attachments.length === 0 ? (
-                <li>暂无附件</li>
+                <li>暂无已上传文件</li>
               ) : (
                 attachments.map((att) => (
                   <li key={att.id} style={{ marginBottom: 8 }}>
@@ -966,16 +902,23 @@ export default function TaskDetail() {
             </ul>
           </div>
 
-          <div style={{ marginBottom: 20 }}>
-            <Text strong style={{ display: "block", marginBottom: 8 }}>项目背景说明</Text>
-            <TextArea
-              value={proposalDraft}
-              onChange={setProposalDraft}
-              rows={6}
-                placeholder="补充项目背景、客户目标、建设范围、已知约束…"
-              style={{ ...techInputStyle, marginBottom: 12 }}
-            />
-          </div>
+          {task.proposal_body?.trim() ? (
+            <div style={{ marginBottom: 20 }}>
+              <Text strong style={{ display: "block", marginBottom: 8 }}>项目背景说明</Text>
+              <div
+                style={{
+                  padding: "14px 16px",
+                  borderRadius: formFieldRadius,
+                  border: "1px solid rgba(226, 232, 240, 0.92)",
+                  background: "rgba(248, 250, 252, 0.76)",
+                }}
+              >
+                <Paragraph style={{ margin: 0, color: "rgba(51, 65, 85, 0.9)", lineHeight: 1.8 }}>
+                  {task.proposal_body.trim()}
+                </Paragraph>
+              </div>
+            </div>
+          ) : null}
 
           <div style={{ marginBottom: 20 }}>
               <Text strong style={{ display: "block", marginBottom: 8 }}>审查智能体</Text>
@@ -985,7 +928,7 @@ export default function TaskDetail() {
                   flex: 1,
                   minWidth: 280,
                   padding: "12px 14px",
-                  borderRadius: 14,
+                  borderRadius: formFieldRadius,
                   border: "1px solid rgba(120, 255, 230, 0.12)",
                   background: "rgba(255,255,255,0.88)",
                   color: "#0f172a",
@@ -995,15 +938,12 @@ export default function TaskDetail() {
                   ? `${selectedAgent.name} · ${selectedAgent.model}`
                   : "当前任务未绑定审查智能体"}
               </div>
-              <Button loading={saving} onClick={() => void saveMaterialsAndPrompt()}>
-                保存说明并重建解析
-              </Button>
-              <Button theme="solid" type="primary" loading={reviewBusy} style={techPrimaryBtn} onClick={() => void triggerIssueReview()}>
+              <Button theme="solid" type="primary" loading={reviewBusy} style={techPrimaryButton} onClick={() => void triggerIssueReview()}>
                 {reviewBusy ? "提交中…" : "发起问题审查"}
               </Button>
             </div>
           </div>
-        </Card>
+        </>
       ) : null}
 
       {step === "result" ? (
@@ -1011,7 +951,7 @@ export default function TaskDetail() {
           <Space vertical spacing="loose" style={{ width: "100%", alignItems: "stretch" }}>
             <Card
               bordered={false}
-              style={shellCardStyle}
+              style={pageShellSoft}
               className="tech-enter tech-enter-3"
               title={<Title heading={5} style={{ color: "#0f172a" }}>问题审查总览</Title>}
             >
@@ -1079,83 +1019,87 @@ export default function TaskDetail() {
               ) : null}
             </Card>
 
-            <Card bordered={false} style={softTechCardStyle} className="tech-enter tech-enter-4">
-              <Space style={{ width: "100%", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
-                <Space wrap>
-                  <Button
-                    theme={severityFilter === "all" ? "solid" : "light"}
-                    type={severityFilter === "all" ? "primary" : "tertiary"}
-                    style={severityFilter === "all" ? techPrimaryBtn : undefined}
-                    onClick={() => setSeverityFilter("all")}
-                  >
-                    全部问题
-                  </Button>
-                  <Button
-                    theme={severityFilter === "serious" ? "solid" : "light"}
-                    type={severityFilter === "serious" ? "primary" : "tertiary"}
-                    style={severityFilter === "serious" ? techPrimaryBtn : undefined}
-                    onClick={() => setSeverityFilter("serious")}
-                  >
-                    仅严重
-                  </Button>
-                  <Button
-                    theme={severityFilter === "major" ? "solid" : "light"}
-                    type={severityFilter === "major" ? "primary" : "tertiary"}
-                    style={severityFilter === "major" ? techPrimaryBtn : undefined}
-                    onClick={() => setSeverityFilter("major")}
-                  >
-                    仅一般
-                  </Button>
-                  <Button
-                    theme={severityFilter === "minor" ? "solid" : "light"}
-                    type={severityFilter === "minor" ? "primary" : "tertiary"}
-                    style={severityFilter === "minor" ? techPrimaryBtn : undefined}
-                    onClick={() => setSeverityFilter("minor")}
-                  >
-                    仅轻微
-                  </Button>
-                  <Select
-                    value={dimensionFilter}
-                    style={{ minWidth: 220 }}
-                    optionList={dimensionOptions}
-                    onChange={(value: string | number | Record<string, unknown> | unknown[] | undefined) =>
-                      setDimensionFilter(typeof value === "number" || value === "all" ? value : "all")
-                    }
-                  />
-                  <Input
-                    value={issueKeyword}
-                    onChange={setIssueKeyword}
-                    placeholder="搜索问题标题、描述、建议"
-                    style={{ minWidth: 260, ...techInputStyle }}
-                  />
+            <Card bordered={false} style={pageShellSoft} className="tech-enter tech-enter-4">
+              <Space vertical spacing="medium" style={{ width: "100%", alignItems: "stretch" }}>
+                <Space style={{ width: "100%", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
+                  <Space wrap>
+                    <Button
+                      theme={severityFilter === "all" ? "solid" : "light"}
+                      type={severityFilter === "all" ? "primary" : "tertiary"}
+                      style={severityFilter === "all" ? techPrimaryButton : undefined}
+                      onClick={() => setSeverityFilter("all")}
+                    >
+                      全部问题
+                    </Button>
+                    <Button
+                      theme={severityFilter === "serious" ? "solid" : "light"}
+                      type={severityFilter === "serious" ? "primary" : "tertiary"}
+                      style={severityFilter === "serious" ? techPrimaryButton : undefined}
+                      onClick={() => setSeverityFilter("serious")}
+                    >
+                      仅严重
+                    </Button>
+                    <Button
+                      theme={severityFilter === "major" ? "solid" : "light"}
+                      type={severityFilter === "major" ? "primary" : "tertiary"}
+                      style={severityFilter === "major" ? techPrimaryButton : undefined}
+                      onClick={() => setSeverityFilter("major")}
+                    >
+                      仅一般
+                    </Button>
+                    <Button
+                      theme={severityFilter === "minor" ? "solid" : "light"}
+                      type={severityFilter === "minor" ? "primary" : "tertiary"}
+                      style={severityFilter === "minor" ? techPrimaryButton : undefined}
+                      onClick={() => setSeverityFilter("minor")}
+                    >
+                      仅轻微
+                    </Button>
+                    <Select
+                      value={dimensionFilter}
+                      style={{ minWidth: 220 }}
+                      optionList={dimensionOptions}
+                      onChange={(value: string | number | Record<string, unknown> | unknown[] | undefined) =>
+                        setDimensionFilter(typeof value === "number" || value === "all" ? value : "all")
+                      }
+                    />
+                  </Space>
+                  <Space wrap>
+                    <Button
+                      theme={manualOnly ? "solid" : "light"}
+                      type={manualOnly ? "primary" : "tertiary"}
+                      style={manualOnly ? techPrimaryButton : undefined}
+                      onClick={() => setManualOnly((v) => !v)}
+                    >
+                      {manualOnly ? "显示全部" : "仅人工重点复核"}
+                    </Button>
+                    <Select
+                      value={statusFilter}
+                      style={{ minWidth: 180 }}
+                      optionList={[
+                        { label: "全部状态", value: "all" },
+                        { label: "待处理", value: "open" },
+                        { label: "已采纳", value: "accepted" },
+                        { label: "已驳回", value: "dismissed" },
+                        { label: "已修订", value: "revised" },
+                      ]}
+                      onChange={(value: string | number | Record<string, unknown> | unknown[] | undefined) =>
+                        setStatusFilter(typeof value === "string" ? (value as "all" | ReviewIssue["status"]) : "all")
+                      }
+                    />
+                  </Space>
                 </Space>
-                <Button
-                  theme={manualOnly ? "solid" : "light"}
-                  type={manualOnly ? "primary" : "tertiary"}
-                  style={manualOnly ? techPrimaryBtn : undefined}
-                  onClick={() => setManualOnly((v) => !v)}
-                >
-                  {manualOnly ? "显示全部" : "仅人工重点复核"}
-                </Button>
-                <Select
-                  value={statusFilter}
-                  style={{ minWidth: 180 }}
-                  optionList={[
-                    { label: "全部状态", value: "all" },
-                    { label: "待处理", value: "open" },
-                    { label: "已采纳", value: "accepted" },
-                    { label: "已驳回", value: "dismissed" },
-                    { label: "已修订", value: "revised" },
-                  ]}
-                  onChange={(value: string | number | Record<string, unknown> | unknown[] | undefined) =>
-                    setStatusFilter(typeof value === "string" ? (value as "all" | ReviewIssue["status"]) : "all")
-                  }
+                <Input
+                  value={issueKeyword}
+                  onChange={setIssueKeyword}
+                  placeholder="搜索问题标题、描述、建议"
+                  style={{ width: "100%", ...techFieldSurface }}
                 />
               </Space>
             </Card>
 
             {filteredIssues.map((item) => (
-              <Card key={item.id} bordered={false} style={softTechCardStyle} className="tech-rise-in tech-delay-2">
+              <Card key={item.id} bordered={false} style={pageShellSoft} className="tech-rise-in tech-delay-2">
                 <Space style={{ width: "100%", justifyContent: "space-between", alignItems: "flex-start" }}>
                   <div style={{ flex: 1 }}>
                     {(() => {
@@ -1178,7 +1122,7 @@ export default function TaskDetail() {
                         style={{
                           marginTop: 14,
                           padding: 14,
-                          borderRadius: 18,
+                          borderRadius: formFieldRadius,
                           background: "rgba(248, 250, 252, 0.92)",
                           border: "1px solid rgba(203, 213, 225, 0.92)",
                         }}
@@ -1257,7 +1201,7 @@ export default function TaskDetail() {
                           <Space wrap>
                             <Button
                               loading={issueBusyId === item.id}
-                              style={techPrimaryBtn}
+                              style={techPrimaryButton}
                               theme="solid"
                               type="primary"
                               onClick={() => void saveIssueEdit(item.id)}
@@ -1295,7 +1239,7 @@ export default function TaskDetail() {
                               style={{
                                 width: "100%",
                                 padding: 12,
-                                borderRadius: 14,
+                                borderRadius: formFieldRadius,
                                 background: "rgba(248, 250, 252, 0.92)",
                                 border: "1px solid rgba(226, 232, 240, 0.95)",
                               }}
@@ -1368,7 +1312,7 @@ export default function TaskDetail() {
               </Card>
             ))}
             {!filteredIssues.length ? (
-              <Card bordered={false} style={softTechCardStyle}>
+              <Card bordered={false} style={pageShellSoft}>
                 <Paragraph style={{ margin: 0, color: "rgba(71, 85, 105, 0.86)" }}>
                   当前筛选条件下暂无问题记录。
                 </Paragraph>
@@ -1376,7 +1320,7 @@ export default function TaskDetail() {
             ) : null}
           </Space>
         ) : (
-          <Card bordered={false} style={shellCardStyle} className="tech-enter tech-enter-3">
+          <Card bordered={false} style={pageShellSoft} className="tech-enter tech-enter-3">
             <Paragraph style={{ color: "rgba(51, 65, 85, 0.88)" }}>
               当前还没有问题审查结果。请先更新材料解析，再点击“发起问题审查”。
             </Paragraph>
@@ -1384,7 +1328,7 @@ export default function TaskDetail() {
               <Button loading={analyzing} onClick={() => void runAnalysis()}>
                 {analyzing ? "解析中…" : "更新材料解析"}
               </Button>
-              <Button theme="solid" type="primary" loading={reviewBusy} style={techPrimaryBtn} onClick={() => void triggerIssueReview()}>
+              <Button theme="solid" type="primary" loading={reviewBusy} style={techPrimaryButton} onClick={() => void triggerIssueReview()}>
                 {reviewBusy ? "提交中…" : "发起问题审查"}
               </Button>
             </Space>
@@ -1396,14 +1340,10 @@ export default function TaskDetail() {
         <Space vertical spacing="loose" style={{ width: "100%", alignItems: "stretch" }}>
           <Card
             bordered={false}
-            style={shellCardStyle}
+            style={pageShellSoft}
             className="tech-enter tech-enter-3"
             title={<Title heading={5} style={{ color: "#0f172a" }}>审查意见书</Title>}
           >
-            <Paragraph style={{ color: "rgba(51, 65, 85, 0.88)", lineHeight: 1.8 }}>
-              当前报告页已切换为基于问题清单的“审查意见书”导出模式，不再兼容旧版评分报告。请先完成问题审查，再下载 HTML 或 Word 版意见书。
-            </Paragraph>
-
             {issueSummary ? (
               <div style={{ marginBottom: 18 }}>
                 <Text strong style={{ display: "block", marginBottom: 8 }}>总体判断</Text>
@@ -1419,7 +1359,7 @@ export default function TaskDetail() {
                 type="primary"
                 icon={<IconDownload />}
                 loading={wordDownloading}
-                style={techPrimaryBtn}
+                style={techPrimaryButton}
                 onClick={() => {
                   setErr(null);
                   setWordDownloading(true);
@@ -1442,16 +1382,10 @@ export default function TaskDetail() {
               </Button>
             </Space>
           </Card>
-
-          <Card bordered={false} style={softTechCardStyle} className="tech-enter tech-enter-4" title={<Title heading={6} style={{ color: "#0f172a" }}>评测原则</Title>}>
-            <ul style={{ margin: 0, paddingLeft: 20, color: "rgba(71, 85, 105, 0.88)", fontSize: 14 }}>
-              {fw.meta.principles.map((t, i) => (
-                <li key={i} style={{ marginBottom: 4 }}>{t}</li>
-              ))}
-            </ul>
-          </Card>
         </Space>
       ) : null}
+        </div>
+      </Card>
 
       <div className="taskdetail-footer-nav">
         {prevKey ? (
@@ -1465,7 +1399,7 @@ export default function TaskDetail() {
           <Button
             theme="solid"
             type="primary"
-            style={techPrimaryBtn}
+            style={techPrimaryButton}
             disabled={step === "materials" && !issueSummary}
             onClick={() => nav(`/tasks/${task.id}/${nextKey}`)}
           >
